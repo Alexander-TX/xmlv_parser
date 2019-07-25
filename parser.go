@@ -6,10 +6,13 @@ import (
     "fmt"
     "flag"
     "time"
+    "bufio"
+    "runtime"
     "io/ioutil"
     "database/sql"
     "encoding/xml"
     "path/filepath"
+    "compress/gzip"
     "golang.org/x/net/html/charset"
 )
 
@@ -24,34 +27,92 @@ type Programm struct {
 
 var db *sql.DB
 var sql1, sql2 *sql.Stmt
+var startFrom time.Time
+var spanDuration time.Duration
+
+var dbEarliestDate *time.Time
+var dbLastDate *time.Time
+
+var localLocation *time.Location
+
+var eltDateFormat string
+
+var exitCode = 0
+
+func Bail(format string, a ...interface{}) {
+  fmt.Fprintf(os.Stderr, format, a...)
+  runtime.Goexit()
+}
 
 func main() {
-  dbPath := flag.String("input", "output.slite", "database file")
-  xmlPath := flag.String("output", "week.xml", "XMLTV file")
+  defer os.Exit(exitCode)
+
+  dbEarliestDate = nil
+  dbLastDate = nil
+
+  eltDateFormat = "02-01-2006 15:04"
+
+  defDuration, _ := time.ParseDuration("72h")
+
+  dbPath := flag.String("output", "output.eltex.epg", "database file.")
+  xmlPath := flag.String("input", "", "XMLTV file. (default read from standard input)")
+  timeStart := flag.String("offset", "", "start import from specified date. Example: 29-12-2009 16:40. (default today)")
+  argDuration := flag.Duration("timespan", defDuration, "duration since start date. Example: 72h.")
   flag.Parse()
+
+  spanDuration = *argDuration
+
+  timeNow := time.Now()
+  timeZone, _ := timeNow.Zone()
+  localLocation = timeNow.Location()
+
+  fmt.Printf("Local time zone %s (%s)\n", timeZone, localLocation)
+
+  if (spanDuration.Nanoseconds() == 0) {
+    panic("Duration must be positive")
+  }
+
+  if (*timeStart == "") {
+    startFrom = time.Now()
+  } else {
+    var startFromErr error
+
+    startFrom, startFromErr = time.ParseInLocation(eltDateFormat, *timeStart, localLocation)
+    if (startFromErr != nil) {
+      panic("Failed to parse start time: " + startFromErr.Error())
+    }
+  }
 
   outDir := filepath.Dir(*dbPath)
 
-  tmpFile, tmpErr := ioutil.TempFile(outDir, "db-")
+  tmpFile, tmpErr := ioutil.TempFile(outDir, "db-*.sqlite")
   if tmpErr != nil {
-    panic("Cannot create temporary file" + tmpErr.Error())
+    Bail("Cannot create temporary file\n %s\n", tmpErr.Error())
   }
+
+  defer os.Remove(tmpFile.Name())
 
   dbUrl := fmt.Sprintf("file:%s", tmpFile.Name())
 
   db, dbErr := sql.Open("sqlite3", dbUrl)
   if dbErr != nil {
-    panic("error: " + dbErr.Error())
+    Bail("sqlite error\n %s\n", dbErr.Error())
   }
 
-  defer db.Close()
+  db.Exec("CREATE TABLE search_meta (docid INTEGER PRIMARY KEY, ch_id, start_time INTEGER, name, description);")
+  db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(content='search_meta', name, description);")
 
-  db.Exec("CREATE TABLE search_meta (docid INTEGER PRIMARY KEY, ch_id, start_time, description);")
-  db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(content='search_meta', channel_name, description);")
+  var xmlFile io.Reader
 
-  xmlFile, inputErr := os.Open(*xmlPath)
-  if inputErr != nil {
-    panic("Could not open file: week.xml")
+  if (*xmlPath == "") {
+    xmlFile = bufio.NewReader(os.Stdin)
+  } else {
+    var inputErr error
+
+    xmlFile, inputErr = os.Open(*xmlPath)
+    if inputErr != nil {
+      Bail("Could not open XMLTV file\n %s\n", inputErr.Error())
+    }
   }
 
   decoder := xml.NewDecoder(xmlFile)
@@ -61,18 +122,18 @@ func main() {
 
   bulkTx, txErr := db.Begin()
   if txErr != nil {
-    panic("Could not start transaction" + txErr.Error())
+    Bail("Could not start transaction\n %s\n", txErr.Error())
   }
 
-  sql1, _ = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, description) VALUES (?, ?, ?);")
-  sql2, _ = bulkTx.Prepare("INSERT INTO fts_search (docid, description) VALUES (?, ?);")
+  sql1, _ = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, name, description) VALUES (?, ?, ?, ?);")
+  sql2, _ = bulkTx.Prepare("INSERT INTO fts_search (docid, name, description) VALUES (?, ?, ?);")
 
   // skip root
 root:
   for {
     token, xmlErr := decoder.Token()
     if xmlErr != nil {
-      panic("XMLTV file is malformed (failed to find root tag)")
+      Bail("XMLTV file is malformed (failed to find root tag)")
     }
 
     switch xmlRoot := token.(type) {
@@ -82,10 +143,14 @@ root:
         if (xmlRoot.Name.Local == "tv") {
           break root;
         } else {
-          panic(fmt.Sprintf("malformed XMLTV: <tv> tag not found, got <%s> instead", xmlRoot.Name.Local))
+          Bail("malformed XMLTV: <tv> tag not found, got <%s> instead", xmlRoot.Name.Local)
         }
     }
   }
+
+  fmt.Printf("Copying XMLTV schedule to database\n")
+
+  var appendedElements = 0
 
   // iterate over all <programme> tags and add them to database
   for {
@@ -94,7 +159,7 @@ root:
       if tokenErr == io.EOF {
         break
       } else {
-        panic("Failed to read token:" + tokenErr.Error())
+        Bail("Failed to read token\n %s\n", tokenErr.Error())
       }
     }
 
@@ -108,41 +173,112 @@ root:
           decoder.Skip()
           continue;
         }
-        addElement(decoder, programme, &startElement)
+        if (addElement(decoder, programme, &startElement)) {
+          appendedElements += 1;
+        }
         break;
     }
   }
 
+  if (appendedElements == 0) {
+    emptyErrStr := fmt.Sprintf("no elements within specified period (%s)", startFrom.Format(eltDateFormat))
+
+    if (dbLastDate != nil) {
+      emptyErrStr += fmt.Sprintf(", last slot is at %s", (*dbLastDate).Format(eltDateFormat))
+    }
+
+    if (dbEarliestDate != nil) {
+      emptyErrStr += fmt.Sprintf(", first slot is at %s", (*dbEarliestDate).Format(eltDateFormat))
+    }
+
+    Bail("%s\n", emptyErrStr)
+  }
+
   bulkTx.Commit()
+
+  _, indexErr := db.Exec("CREATE INDEX search_idx ON search_meta (start_time);")
+  if indexErr != nil {
+    Bail("index creation failed\n %s\n", indexErr.Error())
+  }
 
   _, optimizeErr := db.Exec("INSERT INTO fts_search(fts_search) VALUES('optimize');")
   if optimizeErr != nil {
-    panic("optimize() failed: " + optimizeErr.Error())
+    Bail("optimize() failed\n %s\n" + optimizeErr.Error())
+  }
+
+  db.Close()
+
+  fmt.Printf("Compressing database file\n")
+
+  gzTmpFile, gzTmpErr := ioutil.TempFile(outDir, "db-*.gz")
+  if gzTmpErr != nil {
+    Bail("Failed to create compressed output file\n %s\n", gzTmpErr.Error())
+  }
+
+  defer os.Remove(gzTmpFile.Name())
+
+  gzipWriter, _ := gzip.NewWriterLevel(bufio.NewWriter(gzTmpFile), gzip.BestCompression)
+
+  buf := make([]byte, 128 * 1024)
+
+  for {
+    n, readErr := tmpFile.Read(buf)
+    if readErr != nil && readErr != io.EOF {
+      Bail("%s\n", readErr)
+    }
+    if n == 0 {
+      break
+    }
+    if _, writeErr := gzipWriter.Write(buf[:n]); writeErr != nil {
+      Bail("%s\n", writeErr)
+    }
+  }
+  gzipWriter.Flush()
+
+  renameErr := os.Rename(gzTmpFile.Name(), *dbPath)
+  if (renameErr != nil) {
+    Bail("Failed to move temporary file to output\n %s\n", renameErr.Error())
   }
 }
 
-func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.StartElement) {
+func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.StartElement) bool {
   decErr := decoder.DecodeElement(programme, xmlElement)
   if (decErr != nil) {
-    panic("Could not decode element" + decErr.Error())
+    Bail("Could not decode element\n %s\n", decErr.Error())
   }
 
-  //fmt.Printf("Another slot on channel %s...\n", programme.Channel)
-
-  startTime, timeErr := time.ParseInLocation("20060102150405 -0700", programme.Start, time.FixedZone("None", 0))
+  startTime, timeErr := time.ParseInLocation("20060102150405 -0700", programme.Start, localLocation)
   if (timeErr != nil) {
-    panic("Failed to parse start time: " + timeErr.Error())
+    Bail("Failed to parse start time\n %s\n", timeErr.Error())
   }
 
-  result, metaErr := sql1.Exec(startTime.Unix(), programme.Channel, programme.Description)
+  startTime = time.Unix(startTime.Unix(), 0).In(localLocation)
+
+  if (startTime.Before(startFrom)) {
+    if (dbLastDate == nil || startTime.After(*dbLastDate)) {
+      dbLastDate = &startTime
+    }
+    return false;
+  }
+
+  if (startFrom.Add(spanDuration).Before(startTime)) {
+    if (dbEarliestDate == nil || startTime.Before(*dbEarliestDate)) {
+      dbEarliestDate = &startTime
+    }
+    return false
+  }
+
+  result, metaErr := sql1.Exec(startTime.Unix(), programme.Channel, programme.Title, programme.Description)
   if (metaErr != nil) {
-    panic("Meta INSERT failed" + metaErr.Error())
+    Bail("Meta INSERT failed\n %s\n", metaErr.Error())
   }
 
   insertId, _ := result.LastInsertId()
 
-  _, ftsErr := sql2.Exec(insertId, programme.Description)
+  _, ftsErr := sql2.Exec(insertId, programme.Title, programme.Description)
   if (ftsErr != nil) {
-    panic("FTS INSERT failed" + ftsErr.Error())
+    Bail("FTS INSERT failed\n %s\n", ftsErr.Error())
   }
+
+  return true
 }
