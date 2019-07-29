@@ -115,6 +115,8 @@ func main() {
   var xmlFile io.Reader
 
   if (*xmlPath == "") {
+    fmt.Printf("No -input argument, reading from standard input...\n");
+
     xmlFile = bufio.NewReader(os.Stdin)
   } else {
     var inputErr error
