@@ -7,6 +7,8 @@ import (
     "flag"
     "time"
     "bufio"
+    "regexp"
+    "strings"
     "runtime"
     "io/ioutil"
     "database/sql"
@@ -36,6 +38,8 @@ var dbLastDate *time.Time
 var localLocation *time.Location
 
 var eltDateFormat string
+
+var ageRegexp *regexp.Regexp
 
 var exitCode = 0
 
@@ -90,8 +94,6 @@ func main() {
     Bail("Cannot create temporary file\n %s\n", tmpErr.Error())
   }
 
-  defer os.Remove(tmpFile.Name())
-
   dbUrl := fmt.Sprintf("file:%s", tmpFile.Name())
 
   db, dbErr := sql.Open("sqlite3", dbUrl)
@@ -99,8 +101,16 @@ func main() {
     Bail("sqlite error\n %s\n", dbErr.Error())
   }
 
-  db.Exec("CREATE TABLE search_meta (docid INTEGER PRIMARY KEY, ch_id, start_time INTEGER, name, description);")
-  db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(content='search_meta', name, description);")
+  // do not create on-disk temporary files (we don't want to clean them up)
+  db.Exec("PRAGMA journal_mode = MEMORY;")
+  db.Exec("PRAGMA temp_store = MEMORY;")
+
+  db.Exec("PRAGMA application_id = 0x656c7478;") // hint: see hex
+
+  os.Remove(tmpFile.Name())
+
+  db.Exec("CREATE TABLE search_meta (docid INTEGER PRIMARY KEY, ch_id, start_time INTEGER, title TEXT, description TEXT);")
+  db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(content='search_meta', title, description);")
 
   var xmlFile io.Reader
 
@@ -125,8 +135,8 @@ func main() {
     Bail("Could not start transaction\n %s\n", txErr.Error())
   }
 
-  sql1, _ = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, name, description) VALUES (?, ?, ?, ?);")
-  sql2, _ = bulkTx.Prepare("INSERT INTO fts_search (docid, name, description) VALUES (?, ?, ?);")
+  sql1, _ = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, title, description) VALUES (?, ?, ?, ?);")
+  sql2, _ = bulkTx.Prepare("INSERT INTO fts_search (docid, title, description) VALUES (?, ?, ?);")
 
   // skip root
 root:
@@ -149,6 +159,8 @@ root:
   }
 
   fmt.Printf("Copying XMLTV schedule to database\n")
+
+  ageRegexp = regexp.MustCompile("(.+)\\([0-9]{1,2}\\+\\)$")
 
   var appendedElements = 0
 
@@ -203,10 +215,18 @@ root:
 
   _, optimizeErr := db.Exec("INSERT INTO fts_search(fts_search) VALUES('optimize');")
   if optimizeErr != nil {
-    Bail("optimize() failed\n %s\n" + optimizeErr.Error())
+    Bail("optimize() failed\n %s\n", optimizeErr.Error())
   }
 
-  db.Close()
+  _, analyzeErr := db.Exec("ANALYZE;")
+  if analyzeErr != nil {
+    Bail("ANALYZE failed\n %s\n", analyzeErr.Error())
+  }
+
+  _, vacuumErr := db.Exec("VACUUM;")
+  if vacuumErr != nil {
+    Bail("VACUUM failed\n %s\n", vacuumErr.Error())
+  }
 
   fmt.Printf("Compressing database file\n")
 
@@ -217,7 +237,10 @@ root:
 
   defer os.Remove(gzTmpFile.Name())
 
-  gzipWriter, _ := gzip.NewWriterLevel(bufio.NewWriter(gzTmpFile), gzip.BestCompression)
+  gzipBufWriter := bufio.NewWriter(gzTmpFile)
+  gzipWriter, _ := gzip.NewWriterLevel(gzipBufWriter, gzip.BestCompression)
+  gzipWriter.Name = "epg.sqlite"
+  gzipWriter.Comment = "eltex epg v1"
 
   buf := make([]byte, 128 * 1024)
 
@@ -234,6 +257,9 @@ root:
     }
   }
   gzipWriter.Flush()
+  gzipWriter.Close()
+  gzipBufWriter.Flush()
+  gzTmpFile.Close()
 
   renameErr := os.Rename(gzTmpFile.Name(), *dbPath)
   if (renameErr != nil) {
@@ -268,14 +294,24 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
     return false
   }
 
-  result, metaErr := sql1.Exec(startTime.Unix(), programme.Channel, programme.Title, programme.Description)
+  progTitle := programme.Title
+  if (progTitle != "" && !strings.HasSuffix(progTitle, "(18+)")) {
+    // a lot of slots has extraneous suffixes like '(6+)'
+    // we don't care about those, except for the adult-rated stuff, so let's remove them
+    pureText := ageRegexp.FindStringSubmatch(progTitle)
+    if (len(pureText) > 1) {
+      progTitle = strings.TrimSpace(pureText[1])
+    }
+  }
+
+  result, metaErr := sql1.Exec(startTime.Unix(), programme.Channel, progTitle, programme.Description)
   if (metaErr != nil) {
     Bail("Meta INSERT failed\n %s\n", metaErr.Error())
   }
 
   insertId, _ := result.LastInsertId()
 
-  _, ftsErr := sql2.Exec(insertId, programme.Title, programme.Description)
+  _, ftsErr := sql2.Exec(insertId, progTitle, programme.Description)
   if (ftsErr != nil) {
     Bail("FTS INSERT failed\n %s\n", ftsErr.Error())
   }
