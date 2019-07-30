@@ -31,6 +31,8 @@ var db *sql.DB
 var sql1, sql2 *sql.Stmt
 var startFrom time.Time
 var spanDuration time.Duration
+var stringMap map[string]int
+var textIdMax int
 
 var dbEarliestDate *time.Time
 var dbLastDate *time.Time
@@ -53,6 +55,10 @@ func main() {
 
   dbEarliestDate = nil
   dbLastDate = nil
+
+  textIdMax = 1
+
+  stringMap = make(map[string]int)
 
   eltDateFormat = "02-01-2006 15:04"
 
@@ -107,10 +113,10 @@ func main() {
 
   db.Exec("PRAGMA application_id = 0x656c7478;") // hint: see hex
 
-  os.Remove(tmpFile.Name())
+  defer os.Remove(tmpFile.Name())
 
-  db.Exec("CREATE TABLE search_meta (docid INTEGER PRIMARY KEY, ch_id, start_time INTEGER, title TEXT, description TEXT);")
-  db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(content='search_meta', title, description);")
+  db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(matchinfo='fts3', text, tokenize=unicode61);")
+  db.Exec("CREATE TABLE search_meta (_id INTEGER PRIMARY KEY, ch_id, start_time INTEGER, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL);")
 
   var xmlFile io.Reader
 
@@ -137,8 +143,8 @@ func main() {
     Bail("Could not start transaction\n %s\n", txErr.Error())
   }
 
-  sql1, _ = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, title, description) VALUES (?, ?, ?, ?);")
-  sql2, _ = bulkTx.Prepare("INSERT INTO fts_search (docid, title, description) VALUES (?, ?, ?);")
+  sql1, _ = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, title_id, description_id) VALUES (?, ?, ?, ?);")
+  sql2, _ = bulkTx.Prepare("INSERT INTO fts_search (docid, text) VALUES (?, ?);")
 
   // skip root
 root:
@@ -210,9 +216,26 @@ root:
 
   bulkTx.Commit()
 
-  _, indexErr := db.Exec("CREATE INDEX search_idx ON search_meta (start_time);")
+  fmt.Printf("Inserted %d entries with %d unique names\n", appendedElements, textIdMax)
+
+  _, timeIdxErr := db.Exec("CREATE INDEX time_idx ON search_meta (start_time);")
+  if timeIdxErr != nil {
+    Bail("index creation failed\n %s\n", timeIdxErr.Error())
+  }
+
+  _, indexErr := db.Exec("CREATE INDEX ch_idx ON search_meta (ch_id, start_time);")
   if indexErr != nil {
     Bail("index creation failed\n %s\n", indexErr.Error())
+  }
+
+  _, indexErr2 := db.Exec("CREATE INDEX description_idx ON search_meta (description_id);")
+  if indexErr2 != nil {
+    Bail("index creation failed\n %s\n", indexErr2.Error())
+  }
+
+  _, indexErr3 := db.Exec("CREATE INDEX title_idx ON search_meta (title_id);")
+  if indexErr3 != nil {
+    Bail("index creation failed\n %s\n", indexErr3.Error())
   }
 
   _, optimizeErr := db.Exec("INSERT INTO fts_search(fts_search) VALUES('optimize');")
@@ -306,16 +329,35 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
     }
   }
 
-  result, metaErr := sql1.Exec(startTime.Unix(), programme.Channel, progTitle, programme.Description)
-  if (metaErr != nil) {
-    Bail("Meta INSERT failed\n %s\n", metaErr.Error())
+  titleId := stringMap[progTitle]
+  if titleId == 0 {
+    titleId = textIdMax
+    textIdMax += 1
+
+    stringMap[progTitle] = titleId
+
+    _, ftsTitleErr := sql2.Exec(titleId, progTitle)
+    if (ftsTitleErr != nil) {
+      Bail("FTS INSERT failed\n %s\n", ftsTitleErr.Error())
+    }
   }
 
-  insertId, _ := result.LastInsertId()
+  descrId := stringMap[programme.Description]
+  if descrId == 0 {
+    descrId = textIdMax
+    textIdMax += 1
 
-  _, ftsErr := sql2.Exec(insertId, progTitle, programme.Description)
-  if (ftsErr != nil) {
-    Bail("FTS INSERT failed\n %s\n", ftsErr.Error())
+    stringMap[programme.Description] = descrId
+
+    _, ftsErr := sql2.Exec(descrId, programme.Description)
+    if (ftsErr != nil) {
+      Bail("FTS INSERT failed\n %s\n", ftsErr.Error())
+    }
+  }
+
+  _, metaErr := sql1.Exec(startTime.Unix(), programme.Channel, titleId, descrId)
+  if (metaErr != nil) {
+    Bail("Meta INSERT failed\n %s\n", metaErr.Error())
   }
 
   return true
