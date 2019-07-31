@@ -26,15 +26,23 @@ type Programm struct {
  Channel               string             `xml:"channel,attr"`
  Title                 string             `xml:"title"`
  Description           string             `xml:"desc"`
- Icons                 []string           `xml:"icon"`
+ Images                []ImageUri         `xml:"icon"`
+}
+
+type ImageUri struct {
+  Uri                  string             `xml:"src,attr"`
 }
 
 var db *sql.DB
-var sql1, sql2 *sql.Stmt
+var sql1, sql2, sql3 *sql.Stmt
 var startFrom time.Time
 var spanDuration time.Duration
-var stringMap map[string]int
-var textIdMax, snippetLength int
+var stringMap map[string]int64
+var uriMap map[string]int64
+
+var uriIdMax, textIdMax int64
+
+var snippetLength int
 
 var dbEarliestDate *time.Time
 var dbLastDate *time.Time
@@ -62,8 +70,10 @@ func main() {
   dbLastDate = nil
 
   textIdMax = 1
+  uriIdMax = 1
 
-  stringMap = make(map[string]int)
+  stringMap = make(map[string]int64)
+  uriMap = make(map[string]int64)
 
   eltDateFormat = "02-01-2006 15:04"
 
@@ -121,8 +131,21 @@ func main() {
 
   defer os.Remove(tmpFile.Name())
 
-  db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(matchinfo='fts3', text, tokenize=unicode61);")
-  db.Exec("CREATE TABLE search_meta (_id INTEGER PRIMARY KEY, ch_id, start_time INTEGER, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL);")
+  var err error
+
+  _, err = db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(matchinfo='fts3', text, tokenize=unicode61);") // prefix='3'
+  if err != nil {
+    Bail("CREATE TABLE failed", err.Error())
+  }
+  _, err = db.Exec("CREATE TABLE search_meta (_id INTEGER PRIMARY KEY, ch_id, image_uri INTEGER, start_time INTEGER, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL);")
+  if err != nil {
+    Bail("CREATE TABLE failed", err.Error())
+  }
+  _, err = db.Exec("CREATE TABLE uri (_id INTEGER PRIMARY KEY, uri TEXT)")
+  if err != nil {
+    Bail("CREATE TABLE failed", err.Error())
+  }
+
 
   var xmlFile io.Reader
 
@@ -149,8 +172,18 @@ func main() {
     Bail("Could not start transaction\n %s\n", txErr.Error())
   }
 
-  sql1, _ = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, title_id, description_id) VALUES (?, ?, ?, ?);")
-  sql2, _ = bulkTx.Prepare("INSERT INTO fts_search (docid, text) VALUES (?, ?);")
+  sql1, err = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, image_uri, title_id, description_id) VALUES (?, ?, ?, ?, ?);")
+  if err != nil {
+    Bail("Prepare() failed", err.Error())
+  }
+  sql2, err = bulkTx.Prepare("INSERT INTO fts_search (docid, text) VALUES (?, ?);")
+  if err != nil {
+    Bail("Prepare() failed", err.Error())
+  }
+  sql3, err = bulkTx.Prepare("INSERT INTO uri (_id, uri) VALUES (?, ?);")
+  if err != nil {
+    Bail("Prepare() failed", err.Error())
+  }
 
   // skip root
 root:
@@ -204,6 +237,10 @@ root:
         }
         break;
     }
+
+    // DecodeElement is a bit tricky with slices,
+    // so we have to reset value to nil
+    programme.Images = nil
   }
 
   if (appendedElements == 0) {
@@ -386,7 +423,33 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
     trimmedTotal += trimmed
   }
 
-  _, metaErr := sql1.Exec(startTime.Unix(), programme.Channel, titleId, descrId)
+  var imageDbId sql.NullInt64
+
+  if (len(programme.Images) != 0 && len(programme.Images[0].Uri) != 0) {
+    //fmt.Printf("image = %s", programme.Images[0].Uri)
+
+    firstUri := programme.Images[0].Uri
+
+    uriId := uriMap[firstUri]
+    if uriId == 0 {
+      uriId = uriIdMax
+      uriIdMax += 1
+
+      uriMap[firstUri] = uriId
+
+      _, uriErr := sql3.Exec(uriId, firstUri)
+      if (uriErr != nil) {
+        Bail("URI INSERT failed\n %s\n", uriErr.Error())
+      }
+    }
+
+    imageDbId = sql.NullInt64{
+      Int64: uriId,
+      Valid: true,
+    }
+  }
+
+  _, metaErr := sql1.Exec(startTime.Unix(), programme.Channel, imageDbId, titleId, descrId)
   if (metaErr != nil) {
     Bail("Meta INSERT failed\n %s\n", metaErr.Error())
   }
