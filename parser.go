@@ -11,6 +11,7 @@ import (
     "strings"
     "runtime"
     "io/ioutil"
+    "unicode/utf8"
     "database/sql"
     "encoding/xml"
     "path/filepath"
@@ -25,6 +26,7 @@ type Programm struct {
  Channel               string             `xml:"channel,attr"`
  Title                 string             `xml:"title"`
  Description           string             `xml:"desc"`
+ Icons                 []string           `xml:"icon"`
 }
 
 var db *sql.DB
@@ -32,7 +34,7 @@ var sql1, sql2 *sql.Stmt
 var startFrom time.Time
 var spanDuration time.Duration
 var stringMap map[string]int
-var textIdMax int
+var textIdMax, snippetLength int
 
 var dbEarliestDate *time.Time
 var dbLastDate *time.Time
@@ -42,6 +44,9 @@ var localLocation *time.Location
 var eltDateFormat string
 
 var ageRegexp *regexp.Regexp
+
+var trimmedTotal = 0
+var snippetLengthMax = 0
 
 var exitCode = 0
 
@@ -68,6 +73,7 @@ func main() {
   xmlPath := flag.String("input", "", "XMLTV file. (default read from standard input)")
   timeStart := flag.String("offset", "", "start import from specified date. Example: 29-12-2009 16:40. (default today)")
   argDuration := flag.Duration("timespan", defDuration, "duration since start date. Example: 72h.")
+  flag.IntVar(&snippetLength, "snippet", -1, "description length limit. If negative, descriptions aren't clipped.")
   flag.Parse()
 
   spanDuration = *argDuration
@@ -216,7 +222,11 @@ root:
 
   bulkTx.Commit()
 
-  fmt.Printf("Inserted %d entries with %d unique names\n", appendedElements, textIdMax)
+  fmt.Printf("Inserted %d entries, %d unique names\n", appendedElements, textIdMax)
+
+  if (snippetLength >= 0) {
+     fmt.Printf("Trimmed %d characters. Max length before trimming: %d\n", trimmedTotal, snippetLengthMax)
+  }
 
   _, timeIdxErr := db.Exec("CREATE INDEX time_idx ON search_meta (start_time);")
   if timeIdxErr != nil {
@@ -329,6 +339,19 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
     }
   }
 
+  trimmed := 0
+
+  progDescription := programme.Description
+  if (snippetLength >= 0) {
+    descrSymbols := []rune(progDescription)
+
+    if snippetLength < len(descrSymbols) {
+      trimmed = len(descrSymbols) - snippetLength
+
+      progDescription = string(descrSymbols[:snippetLength])
+    }
+  }
+
   titleId := stringMap[progTitle]
   if titleId == 0 {
     titleId = textIdMax
@@ -342,17 +365,25 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
     }
   }
 
-  descrId := stringMap[programme.Description]
+  descrId := stringMap[progDescription]
   if descrId == 0 {
+    runeLength := utf8.RuneCountInString(programme.Description)
+
+    if runeLength > snippetLengthMax {
+      snippetLengthMax = runeLength
+    }
+
     descrId = textIdMax
     textIdMax += 1
 
-    stringMap[programme.Description] = descrId
+    stringMap[progDescription] = descrId
 
-    _, ftsErr := sql2.Exec(descrId, programme.Description)
+    _, ftsErr := sql2.Exec(descrId, progDescription)
     if (ftsErr != nil) {
       Bail("FTS INSERT failed\n %s\n", ftsErr.Error())
     }
+
+    trimmedTotal += trimmed
   }
 
   _, metaErr := sql1.Exec(startTime.Unix(), programme.Channel, titleId, descrId)
