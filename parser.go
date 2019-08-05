@@ -34,7 +34,7 @@ type ImageUri struct {
 }
 
 var db *sql.DB
-var sql1, sql2, sql3 *sql.Stmt
+var sql1, sql2, sql3, sql4 *sql.Stmt
 var startFrom time.Time
 var spanDuration time.Duration
 var stringMap map[string]int64
@@ -134,17 +134,21 @@ func main() {
 
   var err error
 
-  _, err = db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(matchinfo='fts3', text, tokenize=unicode61);") // prefix='3'
+  _, err = db.Exec("CREATE TABLE text (docid INTEGER PRIMARY KEY, text TEXT);")
   if err != nil {
-    Bail("CREATE TABLE failed", err.Error())
+    Bail("CREATE TABLE failed\n %s\n", err.Error())
+  }
+  _, err = db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(content='text', matchinfo='fts3', text, tokenize=unicode61);")
+  if err != nil {
+    Bail("CREATE TABLE failed\n %s\n", err.Error())
   }
   _, err = db.Exec("CREATE TABLE search_meta (_id INTEGER PRIMARY KEY, ch_id, image_uri INTEGER, start_time INTEGER, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL);")
   if err != nil {
-    Bail("CREATE TABLE failed", err.Error())
+    Bail("CREATE TABLE failed\n %s\n", err.Error())
   }
   _, err = db.Exec("CREATE TABLE uri (_id INTEGER PRIMARY KEY, uri TEXT)")
   if err != nil {
-    Bail("CREATE TABLE failed", err.Error())
+    Bail("CREATE TABLE failed\n %s\n", err.Error())
   }
 
 
@@ -173,15 +177,19 @@ func main() {
 
   sql1, err = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, image_uri, title_id, description_id) VALUES (?, ?, ?, ?, ?);")
   if err != nil {
-    Bail("Prepare() failed", err.Error())
+    Bail("Prepare() failed: %s\n", err.Error())
   }
   sql2, err = bulkTx.Prepare("INSERT INTO fts_search (docid, text) VALUES (?, ?);")
   if err != nil {
-    Bail("Prepare() failed", err.Error())
+    Bail("Prepare() failed: %s\n", err.Error())
   }
   sql3, err = bulkTx.Prepare("INSERT INTO uri (_id, uri) VALUES (?, ?);")
   if err != nil {
-    Bail("Prepare() failed", err.Error())
+    Bail("Prepare() failed: %s\n", err.Error())
+  }
+  sql4, err = bulkTx.Prepare("INSERT INTO text (docid, text) VALUES (?, ?);")
+  if err != nil {
+    Bail("Prepare() failed: %s\n", err.Error())
   }
 
   // skip root
@@ -261,7 +269,7 @@ root:
 
   bulkTx.Commit()
 
-  fmt.Printf("Inserted %d entries, %d unique names\n", appendedElements, textIdMax)
+  fmt.Printf("Inserted %d entries, %d unique strings\n", appendedElements, textIdMax)
 
   if (snippetLength >= 0) {
      fmt.Printf("Trimmed %d characters. Max length before trimming: %d\n", trimmedTotal, snippetLengthMax)
@@ -402,6 +410,10 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
     if (ftsTitleErr != nil) {
       Bail("FTS INSERT failed\n %s\n", ftsTitleErr.Error())
     }
+    _, ftsTitleTextErr := sql4.Exec(titleId, progTitle)
+    if (ftsTitleTextErr != nil) {
+      Bail("text INSERT failed\n %s\n", ftsTitleTextErr.Error())
+    }
   }
 
   descrId := stringMap[progDescription]
@@ -420,6 +432,10 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
     _, ftsErr := sql2.Exec(descrId, progDescription)
     if (ftsErr != nil) {
       Bail("FTS INSERT failed\n %s\n", ftsErr.Error())
+    }
+    _, ftsDescrTextErr := sql4.Exec(descrId, progDescription)
+    if (ftsDescrTextErr != nil) {
+      Bail("text INSERT failed\n %s\n", ftsDescrTextErr.Error())
     }
 
     trimmedTotal += trimmed
