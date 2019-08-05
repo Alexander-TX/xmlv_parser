@@ -79,7 +79,7 @@ func main() {
 
   defDuration, _ := time.ParseDuration("72h")
 
-  dbPath := flag.String("output", "output.eltex.epg", "database file.")
+  dbPath := flag.String("output", "schedule.epgx.gz", "database file.")
   xmlPath := flag.String("input", "", "XMLTV file. (default read from standard input)")
   timeStart := flag.String("offset", "", "start import from specified date. Example: 29-12-2009 16:40. (default today)")
   argDuration := flag.Duration("timespan", defDuration, "duration since start date. Example: 72h.")
