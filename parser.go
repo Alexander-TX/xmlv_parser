@@ -165,8 +165,6 @@ func main() {
   decoder := xml.NewDecoder(xmlFile)
   decoder.CharsetReader = charset.NewReaderLabel
 
-  programme := &Programm{}
-
   bulkTx, txErr := db.Begin()
   if txErr != nil {
     Bail("Could not start transaction\n %s\n", txErr.Error())
@@ -211,6 +209,8 @@ root:
 
   var appendedElements = 0
 
+  var programme *Programm
+
   // iterate over all <programme> tags and add them to database
   for {
     t, tokenErr := decoder.Token()
@@ -232,15 +232,16 @@ root:
           decoder.Skip()
           continue;
         }
+
+        // create a new value each time, or else it will be botched
+        // (old values will be kept for unset JSON fields)
+        programme = &Programm{}
+
         if (addElement(decoder, programme, &startElement)) {
           appendedElements += 1;
         }
         break;
     }
-
-    // DecodeElement is a bit tricky with slices,
-    // so we have to reset value to nil
-    programme.Images = nil
   }
 
   if (appendedElements == 0) {
