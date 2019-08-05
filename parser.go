@@ -59,12 +59,13 @@ var snippetLengthMax = 0
 var exitCode = 0
 
 func Bail(format string, a ...interface{}) {
+  exitCode = 1
   fmt.Fprintf(os.Stderr, format, a...)
   runtime.Goexit()
 }
 
 func main() {
-  defer os.Exit(exitCode)
+  defer func() { os.Exit(exitCode) }()
 
   dbEarliestDate = nil
   dbLastDate = nil
@@ -95,7 +96,7 @@ func main() {
   fmt.Printf("Local time zone %s (%s)\n", timeZone, localLocation)
 
   if (spanDuration.Nanoseconds() == 0) {
-    panic("Duration must be positive")
+    Bail("Duration must be positive")
   }
 
   if (*timeStart == "") {
@@ -105,7 +106,7 @@ func main() {
 
     startFrom, startFromErr = time.ParseInLocation(eltDateFormat, *timeStart, localLocation)
     if (startFromErr != nil) {
-      panic("Failed to parse start time: " + startFromErr.Error())
+      Bail("Failed to parse start time:\n %s\n", startFromErr.Error())
     }
   }
 
