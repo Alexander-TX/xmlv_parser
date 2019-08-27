@@ -39,6 +39,7 @@ var startFrom time.Time
 var spanDuration time.Duration
 var stringMap map[string]int64
 var uriMap map[string]int64
+var idMap map[string]string
 
 var uriIdMax, textIdMax int64
 
@@ -53,6 +54,7 @@ var eltDateFormat string
 
 var ageRegexp *regexp.Regexp
 
+var mappedTotal = 0
 var trimmedTotal = 0
 var snippetLengthMax = 0
 
@@ -85,6 +87,7 @@ func main() {
   timeStart := flag.String("offset", "", "start import from specified date. Example: 29-12-2009 16:40. (default today)")
   argDuration := flag.Duration("timespan", defDuration, "duration since start date. Example: 72h.")
   flag.IntVar(&snippetLength, "snippet", -1, "description length limit. If negative, descriptions aren't clipped.")
+  nameMapFile := flag.String("xmap", "", "Optional: file with pipe-separated ID mappings. (default none)")
   flag.Parse()
 
   spanDuration = *argDuration
@@ -108,6 +111,57 @@ func main() {
     if (startFromErr != nil) {
       Bail("Failed to parse start time:\n %s\n", startFromErr.Error())
     }
+  }
+
+  if (*nameMapFile != "") {
+    idMap = make(map[string]string)
+
+    nameMap, idMapErr := os.Open(*nameMapFile)
+    if idMapErr != nil {
+      Bail("Failed to open name map file:\n %s\n")
+    }
+
+    mapReader := bufio.NewReader(nameMap)
+
+    lineNum := 0
+    for {
+      mapRule, lineErr := mapReader.ReadString('\n')
+
+      if mapRule != "" {
+        mapRule = strings.TrimSpace(mapRule)
+
+        ruleLen := len(mapRule)
+
+        lineNum += 1
+
+        sepIdx := strings.LastIndex(mapRule, "|")
+
+        if sepIdx == -1 {
+          Bail("Failed to parse map file. Bad format at line %d: the line does not contain pipe ('|')\n%s\n", lineNum, mapRule)
+        }
+
+        if sepIdx == 0 || sepIdx == ruleLen - 1 {
+          Bail("Failed to parse map file. Bad format at line %d: second ID is missing (line starts or ends with '|'):\n%s\n", lineNum, mapRule)
+        }
+
+        mapNam := mapRule[:sepIdx]
+        mapId := mapRule[sepIdx + 1:]
+
+        idMap[mapId] = mapNam
+      }
+
+      if lineErr != nil {
+        if lineErr == io.EOF {
+          break;
+        }
+
+        Bail("Received IO error during reading map file:\n %s\n", lineErr)
+      }
+    }
+
+    nameMap.Close()
+
+    fmt.Printf("Parsed %d mappings\n", lineNum)
   }
 
   outDir := filepath.Dir(*dbPath)
@@ -270,6 +324,10 @@ root:
   bulkTx.Commit()
 
   fmt.Printf("Inserted %d entries, %d unique strings\n", appendedElements, textIdMax)
+
+  if mappedTotal == 0 && len(idMap) != 0 {
+    fmt.Printf("WARNING: none of %d mappings were used!\n", len(idMap))
+  }
 
   if (snippetLength >= 0) {
      fmt.Printf("Trimmed %d characters. Max length before trimming: %d\n", trimmedTotal, snippetLengthMax)
@@ -467,7 +525,15 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
     }
   }
 
-  _, metaErr := sql1.Exec(startTime.Unix(), programme.Channel, imageDbId, titleId, descrId)
+  chId := programme.Channel
+
+  if mappedId, ok := idMap[chId]; ok {
+    chId = mappedId
+
+    mappedTotal += 1
+  }
+
+  _, metaErr := sql1.Exec(startTime.Unix(), chId, imageDbId, titleId, descrId)
   if (metaErr != nil) {
     Bail("Meta INSERT failed\n %s\n", metaErr.Error())
   }
