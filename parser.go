@@ -96,7 +96,7 @@ func main() {
   fmt.Printf("Local time zone %s (%s)\n", timeZone, localLocation)
 
   if (spanDuration.Nanoseconds() == 0) {
-    Bail("Duration must be positive")
+    Bail("Duration must be positive\n")
   }
 
   if (*timeStart == "") {
@@ -197,7 +197,7 @@ root:
   for {
     token, xmlErr := decoder.Token()
     if xmlErr != nil {
-      Bail("XMLTV file is malformed (failed to find root tag)")
+      Bail("XMLTV file is malformed (failed to find root tag)\n")
     }
 
     switch xmlRoot := token.(type) {
@@ -207,7 +207,7 @@ root:
         if (xmlRoot.Name.Local == "tv") {
           break root;
         } else {
-          Bail("malformed XMLTV: <tv> tag not found, got <%s> instead", xmlRoot.Name.Local)
+          Bail("malformed XMLTV: <tv> tag not found, got <%s> instead\n", xmlRoot.Name.Local)
         }
     }
   }
