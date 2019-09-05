@@ -8,6 +8,7 @@ import (
     "time"
     "bufio"
     "regexp"
+    "strconv"
     "strings"
     "runtime"
     "io/ioutil"
@@ -39,6 +40,11 @@ type ImageUri struct {
   Uri                  string             `xml:"src,attr"`
 }
 
+type ChannelMeta struct {
+  Id                   string
+  ArchiveMinutes       int
+}
+
 var db *sql.DB
 var bulkTx *sql.Tx
 var sql1, sql2, sql3, sql4, sql5 *sql.Stmt
@@ -46,7 +52,7 @@ var startFrom time.Time
 var spanDuration time.Duration
 var stringMap map[string]int64
 var uriMap map[string]int64
-var idMap map[string]string
+var idMap map[string]ChannelMeta
 
 var uriIdMax, textIdMax int64
 
@@ -64,6 +70,8 @@ var ageRegexp *regexp.Regexp
 var mappedTotal = 0
 var trimmedTotal = 0
 var snippetLengthMax = 0
+
+var archivedChannels = 0
 
 var exitCode = 0
 
@@ -121,7 +129,7 @@ func main() {
   }
 
   if (*nameMapFile != "") {
-    idMap = make(map[string]string)
+    idMap = make(map[string]ChannelMeta)
 
     nameMap, idMapErr := os.Open(*nameMapFile)
     if idMapErr != nil {
@@ -137,24 +145,30 @@ func main() {
       if mapRule != "" {
         mapRule = strings.TrimSpace(mapRule)
 
-        ruleLen := len(mapRule)
-
         lineNum += 1
 
-        sepIdx := strings.LastIndex(mapRule, "|")
+        sepIdx := strings.Split(mapRule, "|")
 
-        if sepIdx == -1 {
+        if len(sepIdx) < 2 {
           Bail("Failed to parse map file. Bad format at line %d: the line does not contain pipe ('|')\n%s\n", lineNum, mapRule)
         }
 
-        if sepIdx == 0 || sepIdx == ruleLen - 1 {
+        if len(sepIdx[0]) == 0 || len(sepIdx[1]) == 0 {
           Bail("Failed to parse map file. Bad format at line %d: second ID is missing (line starts or ends with '|'):\n%s\n", lineNum, mapRule)
         }
 
-        mapNam := mapRule[:sepIdx]
-        mapId := mapRule[sepIdx + 1:]
+        mapNam := sepIdx[0]
+        mapId := sepIdx[1]
+        minutes := 0
 
-        idMap[mapId] = mapNam
+        if len(sepIdx) == 3 {
+          minutes, _ = strconv.Atoi(sepIdx[2])
+        }
+
+        idMap[mapId] = ChannelMeta{
+          Id: mapNam,
+          ArchiveMinutes: minutes,
+        }
       }
 
       if lineErr != nil {
@@ -199,7 +213,7 @@ func main() {
   if err != nil {
     Bail("CREATE TABLE failed\n %s\n", err.Error())
   }
-  _, err = db.Exec("CREATE TABLE channels (_id INTEGER PRIMARY KEY, image_uri TEXT, ch_id TEXT NOT NULL UNIQUE, name TEXT);")
+  _, err = db.Exec("CREATE TABLE channels (_id INTEGER PRIMARY KEY, image_uri TEXT, ch_id TEXT NOT NULL UNIQUE, name TEXT, archive_time INTEGER NOT NULL);")
   if err != nil {
     Bail("CREATE TABLE failed\n %s\n", err.Error())
   }
@@ -256,7 +270,7 @@ func main() {
   if err != nil {
     Bail("Prepare() failed: %s\n", err.Error())
   }
-  sql5, err = bulkTx.Prepare("INSERT INTO channels (ch_id, image_uri, name) VALUES (?, ?, ?);")
+  sql5, err = bulkTx.Prepare("INSERT INTO channels (ch_id, image_uri, name, archive_time) VALUES (?, ?, ?, ?);")
   if err != nil {
     Bail("Prepare() failed: %s\n", err.Error())
   }
@@ -346,7 +360,7 @@ root:
 
   bulkTx.Commit()
 
-  fmt.Printf("Inserted %d channels, %d programm entries, %d unique strings\n", appendedChannels, appendedElements, textIdMax)
+  fmt.Printf("Inserted %d channels (%d archived), %d programm entries, %d unique strings\n", appendedChannels, archivedChannels, appendedElements, textIdMax)
 
   if mappedTotal == 0 && len(idMap) != 0 {
     fmt.Printf("WARNING: none of %d mappings were used!\n", len(idMap))
@@ -449,9 +463,21 @@ func addChannel(decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartEle
     return false;
   }
 
-  //fmt.Printf("Inserting %s, %s %s\n", channel.Id, imageUri.String, channel.Name)
+  chId := channel.Id
+  archived := 0
 
-  _, chInsertErr := sql5.Exec(channel.Id, imageUri, strings.ToLower(channel.Name))
+  if mappedId, ok := idMap[chId]; ok {
+    chId = mappedId.Id
+    archived = mappedId.ArchiveMinutes
+  }
+
+  if archived > 0 {
+    archivedChannels += 1
+  }
+
+  //fmt.Printf("Inserting %s, %s %s %d\n", chId, imageUri.String, channel.Name, archived)
+
+  _, chInsertErr := sql5.Exec(chId, imageUri, strings.ToLower(channel.Name), archived)
   if chInsertErr != nil {
     Bail("Failed to insert into channels table\n", chInsertErr.Error())
   }
@@ -580,7 +606,7 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
   chId := programme.Channel
 
   if mappedId, ok := idMap[chId]; ok {
-    chId = mappedId
+    chId = mappedId.Id
 
     mappedTotal += 1
   }
