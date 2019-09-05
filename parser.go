@@ -21,6 +21,12 @@ import (
 
 import _ "gitlab.eltex.loc/aleksandr.rvachev/go-sqlite3.git"
 
+type Channel struct {
+ Name                  string             `xml:"display-name"`
+ Id                    string             `xml:"id,attr"`
+ Icon                  ImageUri           `xml:"icon"`
+}
+
 type Programm struct {
  Start                 string             `xml:"start,attr"`
  Channel               string             `xml:"channel,attr"`
@@ -34,7 +40,8 @@ type ImageUri struct {
 }
 
 var db *sql.DB
-var sql1, sql2, sql3, sql4 *sql.Stmt
+var bulkTx *sql.Tx
+var sql1, sql2, sql3, sql4, sql5 *sql.Stmt
 var startFrom time.Time
 var spanDuration time.Duration
 var stringMap map[string]int64
@@ -67,7 +74,7 @@ func Bail(format string, a ...interface{}) {
 }
 
 func main() {
-  defer func() { os.Exit(exitCode) }()
+  //defer func() { os.Exit(exitCode) }()
 
   dbEarliestDate = nil
   dbLastDate = nil
@@ -192,6 +199,10 @@ func main() {
   if err != nil {
     Bail("CREATE TABLE failed\n %s\n", err.Error())
   }
+  _, err = db.Exec("CREATE TABLE channels (_id INTEGER PRIMARY KEY, image_uri TEXT, ch_id TEXT NOT NULL UNIQUE, name TEXT);")
+  if err != nil {
+    Bail("CREATE TABLE failed\n %s\n", err.Error())
+  }
   _, err = db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(content='text', matchinfo='fts3', text, tokenize=unicode61);")
   if err != nil {
     Bail("CREATE TABLE failed\n %s\n", err.Error())
@@ -245,6 +256,10 @@ func main() {
   if err != nil {
     Bail("Prepare() failed: %s\n", err.Error())
   }
+  sql5, err = bulkTx.Prepare("INSERT INTO channels (ch_id, image_uri, name) VALUES (?, ?, ?);")
+  if err != nil {
+    Bail("Prepare() failed: %s\n", err.Error())
+  }
 
   // skip root
 root:
@@ -271,8 +286,10 @@ root:
   ageRegexp = regexp.MustCompile("(.+)\\([0-9]{1,2}\\+\\)$")
 
   var appendedElements = 0
+  var appendedChannels = 0
 
   var programme *Programm
+  var channel *Channel
 
   // iterate over all <programme> tags and add them to database
   for {
@@ -291,17 +308,23 @@ root:
       case xml.StartElement:
         //fmt.Printf("Another element: %s", startElement.Name.Local)
 
-        if (startElement.Name.Local != "programme") {
+        if (startElement.Name.Local == "channel") {
+          // create a new value each time, or else it will be botched
+          // (old values will be kept for unset JSON fields)
+          channel = &Channel{}
+
+          if (addChannel(decoder, channel, &startElement)) {
+            appendedChannels += 1;
+          }
+        } else if (startElement.Name.Local == "programme") {
+          programme = &Programm{}
+
+          if (addElement(decoder, programme, &startElement)) {
+            appendedElements += 1;
+          }
+        } else {
           decoder.Skip()
           continue;
-        }
-
-        // create a new value each time, or else it will be botched
-        // (old values will be kept for unset JSON fields)
-        programme = &Programm{}
-
-        if (addElement(decoder, programme, &startElement)) {
-          appendedElements += 1;
         }
         break;
     }
@@ -323,7 +346,7 @@ root:
 
   bulkTx.Commit()
 
-  fmt.Printf("Inserted %d entries, %d unique strings\n", appendedElements, textIdMax)
+  fmt.Printf("Inserted %d channels, %d programm entries, %d unique strings\n", appendedChannels, appendedElements, textIdMax)
 
   if mappedTotal == 0 && len(idMap) != 0 {
     fmt.Printf("WARNING: none of %d mappings were used!\n", len(idMap))
@@ -405,6 +428,35 @@ root:
   if (renameErr != nil) {
     Bail("Failed to move temporary file to output\n %s\n", renameErr.Error())
   }
+}
+
+func addChannel(decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartElement) bool {
+  decErr := decoder.DecodeElement(channel, xmlElement)
+  if (decErr != nil) {
+    Bail("Could not decode element\n %s\n", decErr.Error())
+  }
+
+  var imageUri sql.NullString
+
+  if channel.Icon.Uri != "" {
+    imageUri = sql.NullString{
+      String: channel.Icon.Uri,
+      Valid: true,
+    }
+  }
+
+  if (channel.Name == "" || channel.Id == "") {
+    return false;
+  }
+
+  //fmt.Printf("Inserting %s, %s %s\n", channel.Id, imageUri.String, channel.Name)
+
+  _, chInsertErr := sql5.Exec(channel.Id, imageUri, strings.ToLower(channel.Name))
+  if chInsertErr != nil {
+    Bail("Failed to insert into channels table\n", chInsertErr.Error())
+  }
+
+  return true;
 }
 
 func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.StartElement) bool {
