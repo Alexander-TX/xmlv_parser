@@ -62,10 +62,12 @@ var dbEarliestDate *time.Time
 var dbLastDate *time.Time
 
 var localLocation *time.Location
+var xmltvTzOverride *time.Location
 
 var eltDateFormat string
 
 var ageRegexp *regexp.Regexp
+var timeRegexp1 *regexp.Regexp
 
 var mappedTotal = 0
 var trimmedTotal = 0
@@ -82,7 +84,7 @@ func Bail(format string, a ...interface{}) {
 }
 
 func main() {
-  //defer func() { os.Exit(exitCode) }()
+  defer func() { os.Exit(exitCode) }()
 
   dbEarliestDate = nil
   dbLastDate = nil
@@ -103,6 +105,7 @@ func main() {
   argDuration := flag.Duration("timespan", defDuration, "duration since start date. Example: 72h.")
   flag.IntVar(&snippetLength, "snippet", -1, "description length limit. If negative, descriptions aren't clipped.")
   nameMapFile := flag.String("xmap", "", "Optional: file with pipe-separated ID mappings. (default none)")
+  xmltvTz := flag.String("tz", "", "Optional: replace timezone in XMLTV file. Example: 'Asia/Novosibirsk'. (default none)")
   flag.Parse()
 
   spanDuration = *argDuration
@@ -111,7 +114,19 @@ func main() {
   timeZone, _ := timeNow.Zone()
   localLocation = timeNow.Location()
 
-  fmt.Printf("Local time zone %s (%s)\n", timeZone, localLocation)
+  fmt.Printf("Local time zone: %s (%s)\n", timeZone, localLocation)
+
+  if *xmltvTz == "" {
+    fmt.Printf("XMLTV time zone: take from XMLTV file\n")
+  } else {
+    var tzErr error
+    xmltvTzOverride, tzErr = time.LoadLocation(*xmltvTz)
+    if tzErr != nil {
+      Bail("Failed to load timezone '%s'\n %s\n", *xmltvTz, tzErr.Error())
+    }
+
+    fmt.Printf("XMLTV time zone: overriden with %s\n", *xmltvTz)
+  }
 
   if (spanDuration.Nanoseconds() == 0) {
     Bail("Duration must be positive\n")
@@ -298,6 +313,7 @@ root:
   fmt.Printf("Copying XMLTV schedule to database\n")
 
   ageRegexp = regexp.MustCompile("(.+)\\([0-9]{1,2}\\+\\)$")
+  timeRegexp1 = regexp.MustCompile("([0-9]{14})( (?:.+))?$")
 
   var appendedElements = 0
   var appendedChannels = 0
@@ -444,6 +460,24 @@ root:
   }
 }
 
+func parseXmltvDate(source string) (time.Time, error) {
+  // XMLTV dates are "loosely based on ISO 8601", which is rather poorly supported by Go
+  // so we have to do a bit of extra fiddling ourselves
+
+  timeMatch := timeRegexp1.FindStringSubmatch(source)
+  if timeMatch == nil {
+    Bail("Failed to parse date: %s\n", source)
+  }
+
+  if xmltvTzOverride != nil {
+    return time.ParseInLocation("20060102150405", timeMatch[1], xmltvTzOverride)
+  } else if len(timeMatch) > 2 {
+    return time.ParseInLocation("20060102150405 -0700", source, localLocation)
+  } else {
+    return time.ParseInLocation("20060102150405", timeMatch[1], localLocation)
+  }
+}
+
 func addChannel(decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartElement) bool {
   decErr := decoder.DecodeElement(channel, xmlElement)
   if (decErr != nil) {
@@ -473,6 +507,9 @@ func addChannel(decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartEle
 
   if archived > 0 {
     archivedChannels += 1
+
+    // store archived time in seconds
+    archived *= 60;
   }
 
   //fmt.Printf("Inserting %s, %s %s %d\n", chId, imageUri.String, channel.Name, archived)
@@ -491,7 +528,7 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
     Bail("Could not decode element\n %s\n", decErr.Error())
   }
 
-  startTime, timeErr := time.ParseInLocation("20060102150405 -0700", programme.Start, localLocation)
+  startTime, timeErr := parseXmltvDate(programme.Start)
   if (timeErr != nil) {
     Bail("Failed to parse start time\n %s\n", timeErr.Error())
   }
