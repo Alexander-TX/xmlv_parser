@@ -79,6 +79,7 @@ var exitCode = 0
 
 func Bail(format string, a ...interface{}) {
   exitCode = 1
+  fmt.Fprintf(os.Stderr, "%s\n", "Fatal error!!")
   fmt.Fprintf(os.Stderr, format, a...)
   runtime.Goexit()
 }
@@ -101,12 +102,23 @@ func main() {
 
   dbPath := flag.String("output", "schedule.epgx.gz", "database file.")
   xmlPath := flag.String("input", "", "XMLTV file. (default read from standard input)")
-  timeStart := flag.String("offset", "", "start import from specified date. Example: 29-12-2009 16:40. (default today)")
+  timeStart := flag.String("offset", "01-01-1970 00:00", "start import from specified date. Example: 29-12-2009 16:40.")
   argDuration := flag.Duration("timespan", defDuration, "duration since start date. Example: 72h.")
   flag.IntVar(&snippetLength, "snippet", -1, "description length limit. If negative, descriptions aren't clipped.")
   nameMapFile := flag.String("xmap", "", "Optional: file with pipe-separated ID mappings. (default none)")
   xmltvTz := flag.String("tz", "", "Optional: replace timezone in XMLTV file. Example: 'Asia/Novosibirsk'. (default none)")
   flag.Parse()
+
+  seen := make(map[string]bool)
+
+  flag.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+
+  if !seen["offset"] {
+    fmt.Fprintf(os.Stderr, "Warning: missing --offset argument, EPG start defaults to 1 January 1970\n")
+  }
+  if !seen["timespan"] {
+    fmt.Fprintf(os.Stderr, "Warning: missing --timespan argument, EPG length defaults to 74 hours\n")
+  }
 
   spanDuration = *argDuration
 
