@@ -245,7 +245,6 @@ func main() {
     Bail("CREATE TABLE failed\n %s\n", err.Error())
   }
 
-
   var xmlFile io.Reader
 
   if (*xmlPath == "") {
@@ -509,7 +508,7 @@ func addChannel(decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartEle
     archivedChannels += 1
 
     // store archived time in seconds
-    archived *= 60;
+    archived *= 3600;
   }
 
   //fmt.Printf("Inserting %s, %s %s %d\n", chId, imageUri.String, channel.Name, archived)
