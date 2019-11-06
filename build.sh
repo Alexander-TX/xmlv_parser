@@ -8,6 +8,8 @@ export GOROOT="`readlink -f ./go/`"
 export GOPATH="`readlink -f ./gopath/`"
 export PATH="`readlink -f ./go/bin/`:$PATH"
 
+go get "golang.org/x/text/encoding"
+go get "golang.org/x/text/encoding/charmap"
 go get "golang.org/x/net/html/charset"
 go get --insecure "gitlab.eltex.loc/aleksandr.rvachev/go-sqlite3.git"
 
@@ -16,3 +18,6 @@ export CGO_ENABLED=1
 
 GOARCH=386 go build -o parser_32.bin parser.go
 GOARCH=amd64 go build -o parser_64.bin parser.go
+
+GOARCH=386 go build -o jtvgen_32.bin jtvgen.go
+GOARCH=amd64 go build -o jtvgen_64.bin jtvgen.go
