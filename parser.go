@@ -86,7 +86,13 @@ func Bail(format string, a ...interface{}) {
 }
 
 func main() {
-  defer func() { os.Exit(exitCode) }()
+  defer func() {
+    if r := recover(); r != nil {
+      panic(r)
+    } else {
+      os.Exit(exitCode)
+    }
+  }()
 
   dbEarliestDate = nil
   dbLastDate = nil
