@@ -2,10 +2,8 @@
 curl -O 'https://dl.google.com/go/go1.12.7.linux-amd64.tar.gz'
 tar xf 'go1.12.7.linux-amd64.tar.gz'
 
-mkdir -p gopath
-
 export GOROOT="`readlink -f ./go/`"
-export GOPATH="`readlink -f ./gopath/`"
+export GOPATH="`readlink -f .`"
 export PATH="`readlink -f ./go/bin/`:$PATH"
 
 go get "golang.org/x/text/encoding"
@@ -22,10 +20,7 @@ GOARCH=amd64 go build -o parser_64.bin parser.go
 GOARCH=386 go build -o jtvgen_32.bin jtvgen.go
 GOARCH=amd64 go build -o jtvgen_64.bin jtvgen.go
 
-pushd "$GOPATH"
 GOOS=windows GOARCH=386 go install
-popd
-
 GOOS=windows CGO_ENABLED=1 CXX=i686-w64-mingw32-g++ CC=i686-w64-mingw32-gcc \
  GOARCH=386 go build -o parser.exe parser.go
 GOOS=windows CGO_ENABLED=1 CXX=i686-w64-mingw32-g++ CC=i686-w64-mingw32-gcc \
