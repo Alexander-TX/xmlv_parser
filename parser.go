@@ -66,6 +66,7 @@ var localLocation *time.Location
 var xmltvTzOverride *time.Location
 
 var eltDateFormat string
+var useLegacyFormat bool
 
 var ageRegexp *regexp.Regexp
 var timeRegexp1 *regexp.Regexp
@@ -114,6 +115,7 @@ func main() {
   flag.IntVar(&snippetLength, "snippet", -1, "description length limit. If negative, descriptions aren't clipped.")
   nameMapFile := flag.String("xmap", "", "Optional: file with pipe-separated ID mappings. (default none)")
   xmltvTz := flag.String("tz", "", "Optional: replace timezone in XMLTV file. Example: 'Asia/Novosibirsk'. (default none)")
+  flag.BoolVar(&useLegacyFormat, "legacy", false, "Enable generation of legacy EPGX for Android < 21 (with contentless FTS table). Created file won't support snippet() SQL function")
   flag.Parse()
 
   seen := make(map[string]bool)
@@ -257,7 +259,15 @@ func main() {
   if err != nil {
     Bail("CREATE TABLE failed\n %s\n", err.Error())
   }
-  _, err = db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(content='text', matchinfo='fts3', text, tokenize=unicode61);")
+
+  if useLegacyFormat {
+    fmt.Fprintf(os.Stderr, "Using legacy format: tokenize=porter\n")
+
+    _, err = db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(content='', matchinfo='fts3', text, tokenize=porter);")
+  } else {
+    _, err = db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(content='text', matchinfo='fts3', text, tokenize=unicode61);")
+  }
+
   if err != nil {
     Bail("CREATE TABLE failed\n %s\n", err.Error())
   }
@@ -610,13 +620,18 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
 
     stringMap[progTitle] = titleId
 
-    _, ftsTitleErr := sql2.Exec(titleId, progTitle)
-    if (ftsTitleErr != nil) {
-      Bail("FTS INSERT failed\n %s\n", ftsTitleErr.Error())
-    }
     _, ftsTitleTextErr := sql4.Exec(titleId, progTitle)
     if (ftsTitleTextErr != nil) {
       Bail("text INSERT failed\n %s\n", ftsTitleTextErr.Error())
+    }
+
+    if useLegacyFormat {
+      progTitle = strings.ToLower(progTitle)
+    }
+
+    _, ftsTitleErr := sql2.Exec(titleId, progTitle)
+    if (ftsTitleErr != nil) {
+      Bail("FTS INSERT failed\n %s\n", ftsTitleErr.Error())
     }
   }
 
@@ -633,13 +648,17 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
 
     stringMap[progDescription] = descrId
 
-    _, ftsErr := sql2.Exec(descrId, progDescription)
-    if (ftsErr != nil) {
-      Bail("FTS INSERT failed\n %s\n", ftsErr.Error())
-    }
     _, ftsDescrTextErr := sql4.Exec(descrId, progDescription)
     if (ftsDescrTextErr != nil) {
       Bail("text INSERT failed\n %s\n", ftsDescrTextErr.Error())
+    }
+
+    if useLegacyFormat {
+      progDescription = strings.ToLower(progDescription)
+    }
+    _, ftsErr := sql2.Exec(descrId, progDescription)
+    if (ftsErr != nil) {
+      Bail("FTS INSERT failed\n %s\n", ftsErr.Error())
     }
 
     trimmedTotal += trimmed
