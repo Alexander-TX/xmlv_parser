@@ -75,6 +75,8 @@ var mappedTotal = 0
 var trimmedTotal = 0
 var snippetLengthMax = 0
 
+var channelBlacklist, channelWhitelist map[string]struct{}
+
 var archivedChannels = 0
 
 var exitCode = 0
@@ -116,6 +118,8 @@ func main() {
   nameMapFile := flag.String("xmap", "", "Optional: file with pipe-separated ID mappings. (default none)")
   xmltvTz := flag.String("tz", "", "Optional: replace timezone in XMLTV file. Example: 'Asia/Novosibirsk'. (default none)")
   flag.BoolVar(&useLegacyFormat, "legacy", false, "Enable generation of legacy EPGX for Android < 21 (with contentless FTS table). Created file won't support snippet() SQL function")
+  includeCh := flag.String("include", "", "Optional: comma-separated list of channels to include in generated EPG.")
+  excludeCh := flag.String("exclude", "", "Optional: comma-separated list of channels to exclude from generated EPG.")
   flag.Parse()
 
   seen := make(map[string]bool)
@@ -127,6 +131,42 @@ func main() {
   }
   if !seen["timespan"] {
     fmt.Fprintf(os.Stderr, "Warning: missing --timespan argument, EPG length defaults to 74 hours\n")
+  }
+
+  if seen["include"] {
+    if len(*includeCh) == 0 {
+      Bail("Bad --include argument: must contain at least one channel ID\n")
+    }
+
+    if strings.HasSuffix(*includeCh, ",") {
+      Bail("Bad --include argument: must be a list of channels IDs without spaces\n")
+    }
+
+    channelWhitelist = make(map[string]struct{})
+
+    channelsToInclude := strings.Split(*includeCh, ",")
+
+    for _, chIdToInclude := range channelsToInclude {
+      channelWhitelist[chIdToInclude] = struct{}{}
+    }
+  }
+
+  if seen["exclude"] {
+    if len(*excludeCh) == 0 {
+      Bail("Bad --exclude argument: must contain at least one channel ID\n")
+    }
+
+    if strings.HasSuffix(*excludeCh, ",") {
+      Bail("Bad --exclude argument: must be a list of channels IDs without spaces\n")
+    }
+
+    channelBlacklist = make(map[string]struct{})
+
+    channelsToExclude := strings.Split(*excludeCh, ",")
+
+    for _, chIdToExclude := range channelsToExclude {
+      channelBlacklist[chIdToExclude] = struct{}{}
+    }
   }
 
   spanDuration = *argDuration
@@ -546,6 +586,16 @@ func addChannel(decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartEle
     }
   }
 
+  if len(channelWhitelist) != 0 {
+    if _, ok := channelWhitelist[chId]; !ok {
+      return false
+    }
+  }
+
+  if _, blacklisted := channelBlacklist[chId]; blacklisted {
+    return false
+  }
+
   if archived > 0 {
     archivedChannels += 1
 
@@ -567,6 +617,24 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
   decErr := decoder.DecodeElement(programme, xmlElement)
   if (decErr != nil) {
     Bail("Could not decode element\n %s\n", decErr.Error())
+  }
+
+  chId := programme.Channel
+
+  if mappedId, ok := idMap[chId]; ok {
+    chId = mappedId.Id
+
+    mappedTotal += 1
+  }
+
+  if len(channelWhitelist) != 0 {
+    if _, ok := channelWhitelist[chId]; !ok {
+      return false
+    }
+  }
+
+  if _, blacklisted := channelBlacklist[chId]; blacklisted {
+    return false
   }
 
   startTime, timeErr := parseXmltvDate(programme.Start)
@@ -688,14 +756,6 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
       Int64: uriId,
       Valid: true,
     }
-  }
-
-  chId := programme.Channel
-
-  if mappedId, ok := idMap[chId]; ok {
-    chId = mappedId.Id
-
-    mappedTotal += 1
   }
 
   _, metaErr := sql1.Exec(startTime.Unix(), chId, imageDbId, titleId, descrId)
