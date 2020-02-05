@@ -7,6 +7,7 @@ import (
     "flag"
     "time"
     "bufio"
+    "errors"
     "regexp"
     "strconv"
     "strings"
@@ -46,9 +47,11 @@ type ChannelMeta struct {
   ImageUrlOverride     string
 }
 
-var db *sql.DB
-var bulkTx *sql.Tx
-var sql1, sql2, sql3, sql4, sql5 *sql.Stmt
+type RequestContext struct {
+  sql1, sql2, sql3, sql4, sql5 *sql.Stmt
+  db *sql.DB
+}
+
 var startFrom time.Time
 var spanDuration time.Duration
 var stringMap map[string]int64
@@ -274,50 +277,13 @@ func main() {
     Bail("Cannot create temporary file\n %s\n", tmpErr.Error())
   }
 
+  defer os.Remove(tmpFile.Name())
+
   dbUrl := fmt.Sprintf("file:%s", tmpFile.Name())
 
   db, dbErr := sql.Open("sqlite3", dbUrl)
   if dbErr != nil {
     Bail("sqlite error\n %s\n", dbErr.Error())
-  }
-
-  // do not create on-disk temporary files (we don't want to clean them up)
-  db.Exec("PRAGMA journal_mode = MEMORY;")
-  db.Exec("PRAGMA temp_store = MEMORY;")
-
-  db.Exec("PRAGMA application_id = 0x656c7478;") // hint: see hex
-
-  defer os.Remove(tmpFile.Name())
-
-  var err error
-
-  _, err = db.Exec("CREATE TABLE text (docid INTEGER PRIMARY KEY, text TEXT);")
-  if err != nil {
-    Bail("CREATE TABLE failed\n %s\n", err.Error())
-  }
-  _, err = db.Exec("CREATE TABLE channels (_id INTEGER PRIMARY KEY, image_uri TEXT, ch_id TEXT NOT NULL UNIQUE, name TEXT, archive_time INTEGER NOT NULL);")
-  if err != nil {
-    Bail("CREATE TABLE failed\n %s\n", err.Error())
-  }
-
-  if useLegacyFormat {
-    fmt.Fprintf(os.Stderr, "Using legacy format: tokenize=porter\n")
-
-    _, err = db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(content='', matchinfo='fts3', text, tokenize=porter);")
-  } else {
-    _, err = db.Exec("CREATE VIRTUAL TABLE fts_search USING fts4(content='text', matchinfo='fts3', text, tokenize=unicode61);")
-  }
-
-  if err != nil {
-    Bail("CREATE TABLE failed\n %s\n", err.Error())
-  }
-  _, err = db.Exec("CREATE TABLE search_meta (_id INTEGER PRIMARY KEY, ch_id, image_uri INTEGER, start_time INTEGER, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL);")
-  if err != nil {
-    Bail("CREATE TABLE failed\n %s\n", err.Error())
-  }
-  _, err = db.Exec("CREATE TABLE uri (_id INTEGER PRIMARY KEY, uri TEXT)")
-  if err != nil {
-    Bail("CREATE TABLE failed\n %s\n", err.Error())
   }
 
   var xmlFile io.Reader
@@ -335,34 +301,110 @@ func main() {
     }
   }
 
-  decoder := xml.NewDecoder(xmlFile)
-  decoder.CharsetReader = charset.NewReaderLabel
+  gzTmpFile, gzTmpErr := ioutil.TempFile(outDir, "db-*.gz")
+  if gzTmpErr != nil {
+    Bail("Failed to create compressed output file\n %s\n", gzTmpErr.Error())
+  }
+
+  defer os.Remove(gzTmpFile.Name())
+
+  gzipBufWriter := bufio.NewWriter(gzTmpFile)
+  gzipWriter, _ := gzip.NewWriterLevel(gzipBufWriter, gzip.BestCompression)
+  gzipWriter.Name = "epg.sqlite"
+  gzipWriter.Comment = "eltex epg v1"
+
+  ctx := RequestContext{}
+
+  ctx.db = db
+
+  reqErr := processXml(ctx, "main", xmlFile, tmpFile, gzipWriter)
+  if reqErr != nil {
+    Bail("%s\n", reqErr.Error())
+  }
+
+  gzipWriter.Flush()
+  gzipWriter.Close()
+  gzipBufWriter.Flush()
+  gzTmpFile.Close()
+
+  renameErr := os.Rename(gzTmpFile.Name(), *dbPath)
+  if (renameErr != nil) {
+    Bail("Failed to move temporary file to output\n %s\n", renameErr.Error())
+  }
+}
+
+func s(format string, a ...interface{}) string {
+  return fmt.Sprintf(format, a...)
+}
+
+func processXml(ctx RequestContext, dbNam string, xmlFile io.Reader, dbFile io.Reader, destWriter io.Writer) error {
+  db := ctx.db
+
+  // do not create on-disk temporary files (we don't want to clean them up)
+  db.Exec(s("PRAGMA %s.journal_mode = MEMORY;", dbNam))
+  db.Exec(s("PRAGMA %s.temp_store = MEMORY;", dbNam))
+
+  db.Exec(s("PRAGMA %s.application_id = 0x656c7478;", dbNam)) // hint: see hex
+
+  var err error
+
+  _, err = db.Exec(s("CREATE TABLE %s.text (docid INTEGER PRIMARY KEY, text TEXT);", dbNam))
+  if err != nil {
+    return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
+  }
+  _, err = db.Exec(s("CREATE TABLE %s.channels (_id INTEGER PRIMARY KEY, image_uri TEXT, ch_id TEXT NOT NULL UNIQUE, name TEXT, archive_time INTEGER NOT NULL);", dbNam))
+  if err != nil {
+    return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
+  }
+
+  if useLegacyFormat {
+    fmt.Fprintf(os.Stderr, "Using legacy format: tokenize=porter\n")
+
+    _, err = db.Exec(s("CREATE VIRTUAL TABLE %s.fts_search USING fts4(content='', matchinfo='fts3', text, tokenize=porter);", dbNam))
+  } else {
+    _, err = db.Exec(s("CREATE VIRTUAL TABLE %s.fts_search USING fts4(content='text', matchinfo='fts3', text, tokenize=unicode61);", dbNam))
+  }
+
+  if err != nil {
+    return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
+  }
+  _, err = db.Exec(s("CREATE TABLE %s.search_meta (_id INTEGER PRIMARY KEY, ch_id, image_uri INTEGER, start_time INTEGER, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL);", dbNam))
+  if err != nil {
+    return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
+  }
+  _, err = db.Exec(s("CREATE TABLE %s.uri (_id INTEGER PRIMARY KEY, uri TEXT)", dbNam))
+  if err != nil {
+    return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
+  }
 
   bulkTx, txErr := db.Begin()
   if txErr != nil {
-    Bail("Could not start transaction\n %s\n", txErr.Error())
+    return errors.New(s("Could not start transaction\n %s\n", txErr.Error()))
   }
 
-  sql1, err = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, image_uri, title_id, description_id) VALUES (?, ?, ?, ?, ?);")
+  ctx.sql1, err = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, image_uri, title_id, description_id) VALUES (?, ?, ?, ?, ?);")
+  if err != nil {
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
+  }
+  ctx.sql2, err = bulkTx.Prepare("INSERT INTO fts_search (docid, text) VALUES (?, ?);")
+  if err != nil {
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
+  }
+  ctx.sql3, err = bulkTx.Prepare("INSERT INTO uri (_id, uri) VALUES (?, ?);")
   if err != nil {
     Bail("Prepare() failed: %s\n", err.Error())
   }
-  sql2, err = bulkTx.Prepare("INSERT INTO fts_search (docid, text) VALUES (?, ?);")
+  ctx.sql4, err = bulkTx.Prepare("INSERT INTO text (docid, text) VALUES (?, ?);")
   if err != nil {
-    Bail("Prepare() failed: %s\n", err.Error())
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
   }
-  sql3, err = bulkTx.Prepare("INSERT INTO uri (_id, uri) VALUES (?, ?);")
+  ctx.sql5, err = bulkTx.Prepare("INSERT INTO channels (ch_id, image_uri, name, archive_time) VALUES (?, ?, ?, ?);")
   if err != nil {
-    Bail("Prepare() failed: %s\n", err.Error())
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
   }
-  sql4, err = bulkTx.Prepare("INSERT INTO text (docid, text) VALUES (?, ?);")
-  if err != nil {
-    Bail("Prepare() failed: %s\n", err.Error())
-  }
-  sql5, err = bulkTx.Prepare("INSERT INTO channels (ch_id, image_uri, name, archive_time) VALUES (?, ?, ?, ?);")
-  if err != nil {
-    Bail("Prepare() failed: %s\n", err.Error())
-  }
+
+  decoder := xml.NewDecoder(xmlFile)
+  decoder.CharsetReader = charset.NewReaderLabel
 
   // skip root
 root:
@@ -417,13 +459,13 @@ root:
           // (old values will be kept for unset JSON fields)
           channel = &Channel{}
 
-          if (addChannel(decoder, channel, &startElement)) {
+          if (addChannel(ctx, decoder, channel, &startElement)) {
             appendedChannels += 1;
           }
         } else if (startElement.Name.Local == "programme") {
           programme = &Programm{}
 
-          if (addElement(decoder, programme, &startElement)) {
+          if (addElement(ctx, decoder, programme, &startElement)) {
             appendedElements += 1;
           }
         } else {
@@ -460,78 +502,59 @@ root:
      fmt.Printf("Trimmed %d characters. Max length before trimming: %d\n", trimmedTotal, snippetLengthMax)
   }
 
-  _, timeIdxErr := db.Exec("CREATE INDEX time_idx ON search_meta (start_time);")
+  _, timeIdxErr := db.Exec(s("CREATE INDEX %s.time_idx ON search_meta (start_time);", dbNam))
   if timeIdxErr != nil {
-    Bail("index creation failed\n %s\n", timeIdxErr.Error())
+    return errors.New(s("index creation failed\n %s\n", timeIdxErr.Error()))
   }
 
-  _, indexErr := db.Exec("CREATE INDEX ch_idx ON search_meta (ch_id, start_time);")
+  _, indexErr := db.Exec(s("CREATE INDEX %s.ch_idx ON search_meta (ch_id, start_time);", dbNam))
   if indexErr != nil {
-    Bail("index creation failed\n %s\n", indexErr.Error())
+    return errors.New(s("index creation failed\n %s\n", indexErr.Error()))
   }
 
-  _, indexErr2 := db.Exec("CREATE INDEX description_idx ON search_meta (description_id);")
+  _, indexErr2 := db.Exec(s("CREATE INDEX %s.description_idx ON search_meta (description_id);", dbNam))
   if indexErr2 != nil {
-    Bail("index creation failed\n %s\n", indexErr2.Error())
+    return errors.New(s("index creation failed\n %s\n", indexErr2.Error()))
   }
 
-  _, indexErr3 := db.Exec("CREATE INDEX title_idx ON search_meta (title_id);")
+  _, indexErr3 := db.Exec(s("CREATE INDEX %s.title_idx ON search_meta (title_id);", dbNam))
   if indexErr3 != nil {
-    Bail("index creation failed\n %s\n", indexErr3.Error())
+    return errors.New(s("index creation failed\n %s\n", indexErr3.Error()))
   }
 
-  _, optimizeErr := db.Exec("INSERT INTO fts_search(fts_search) VALUES('optimize');")
+  _, optimizeErr := db.Exec(s("INSERT INTO %s.fts_search(fts_search) VALUES('optimize');", dbNam))
   if optimizeErr != nil {
-    Bail("optimize() failed\n %s\n", optimizeErr.Error())
+    return errors.New(s("optimize() failed\n %s\n", optimizeErr.Error()))
   }
 
   _, analyzeErr := db.Exec("ANALYZE;")
   if analyzeErr != nil {
-    Bail("ANALYZE failed\n %s\n", analyzeErr.Error())
+    return errors.New(s("ANALYZE failed\n %s\n", analyzeErr.Error()))
   }
 
   _, vacuumErr := db.Exec("VACUUM;")
   if vacuumErr != nil {
-    Bail("VACUUM failed\n %s\n", vacuumErr.Error())
+    return errors.New(s("VACUUM failed\n %s\n", vacuumErr.Error()))
   }
 
   fmt.Printf("Compressing database file\n")
 
-  gzTmpFile, gzTmpErr := ioutil.TempFile(outDir, "db-*.gz")
-  if gzTmpErr != nil {
-    Bail("Failed to create compressed output file\n %s\n", gzTmpErr.Error())
-  }
-
-  defer os.Remove(gzTmpFile.Name())
-
-  gzipBufWriter := bufio.NewWriter(gzTmpFile)
-  gzipWriter, _ := gzip.NewWriterLevel(gzipBufWriter, gzip.BestCompression)
-  gzipWriter.Name = "epg.sqlite"
-  gzipWriter.Comment = "eltex epg v1"
-
   buf := make([]byte, 128 * 1024)
 
   for {
-    n, readErr := tmpFile.Read(buf)
+    n, readErr := dbFile.Read(buf)
     if readErr != nil && readErr != io.EOF {
-      Bail("%s\n", readErr)
+      return errors.New(s("%s\n", readErr.Error()))
     }
     if n == 0 {
       break
     }
-    if _, writeErr := gzipWriter.Write(buf[:n]); writeErr != nil {
-      Bail("%s\n", writeErr)
+    if _, writeErr := destWriter.Write(buf[:n]); writeErr != nil {
+      return errors.New(s("%s\n", writeErr.Error()))
     }
   }
-  gzipWriter.Flush()
-  gzipWriter.Close()
-  gzipBufWriter.Flush()
-  gzTmpFile.Close()
 
-  renameErr := os.Rename(gzTmpFile.Name(), *dbPath)
-  if (renameErr != nil) {
-    Bail("Failed to move temporary file to output\n %s\n", renameErr.Error())
-  }
+  return nil
 }
 
 func parseXmltvDate(source string) (time.Time, error) {
@@ -552,7 +575,7 @@ func parseXmltvDate(source string) (time.Time, error) {
   }
 }
 
-func addChannel(decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartElement) bool {
+func addChannel(ctx RequestContext, decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartElement) bool {
   decErr := decoder.DecodeElement(channel, xmlElement)
   if (decErr != nil) {
     Bail("Could not decode element\n %s\n", decErr.Error())
@@ -605,7 +628,7 @@ func addChannel(decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartEle
 
   //fmt.Printf("Inserting %s, %s %s %d\n", chId, imageUri.String, channel.Name, archived)
 
-  _, chInsertErr := sql5.Exec(chId, imageUri, strings.ToLower(channel.Name), archived)
+  _, chInsertErr := ctx.sql5.Exec(chId, imageUri, strings.ToLower(channel.Name), archived)
   if chInsertErr != nil {
     Bail("Failed to insert into channels table\n", chInsertErr.Error())
   }
@@ -613,7 +636,7 @@ func addChannel(decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartEle
   return true;
 }
 
-func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.StartElement) bool {
+func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, xmlElement *xml.StartElement) bool {
   decErr := decoder.DecodeElement(programme, xmlElement)
   if (decErr != nil) {
     Bail("Could not decode element\n %s\n", decErr.Error())
@@ -688,7 +711,7 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
 
     stringMap[progTitle] = titleId
 
-    _, ftsTitleTextErr := sql4.Exec(titleId, progTitle)
+    _, ftsTitleTextErr := ctx.sql4.Exec(titleId, progTitle)
     if (ftsTitleTextErr != nil) {
       Bail("text INSERT failed\n %s\n", ftsTitleTextErr.Error())
     }
@@ -697,7 +720,7 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
       progTitle = strings.ToLower(progTitle)
     }
 
-    _, ftsTitleErr := sql2.Exec(titleId, progTitle)
+    _, ftsTitleErr := ctx.sql2.Exec(titleId, progTitle)
     if (ftsTitleErr != nil) {
       Bail("FTS INSERT failed\n %s\n", ftsTitleErr.Error())
     }
@@ -716,7 +739,7 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
 
     stringMap[progDescription] = descrId
 
-    _, ftsDescrTextErr := sql4.Exec(descrId, progDescription)
+    _, ftsDescrTextErr := ctx.sql4.Exec(descrId, progDescription)
     if (ftsDescrTextErr != nil) {
       Bail("text INSERT failed\n %s\n", ftsDescrTextErr.Error())
     }
@@ -724,7 +747,7 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
     if useLegacyFormat {
       progDescription = strings.ToLower(progDescription)
     }
-    _, ftsErr := sql2.Exec(descrId, progDescription)
+    _, ftsErr := ctx.sql2.Exec(descrId, progDescription)
     if (ftsErr != nil) {
       Bail("FTS INSERT failed\n %s\n", ftsErr.Error())
     }
@@ -746,7 +769,7 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
 
       uriMap[firstUri] = uriId
 
-      _, uriErr := sql3.Exec(uriId, firstUri)
+      _, uriErr := ctx.sql3.Exec(uriId, firstUri)
       if (uriErr != nil) {
         Bail("URI INSERT failed\n %s\n", uriErr.Error())
       }
@@ -758,7 +781,7 @@ func addElement(decoder *xml.Decoder, programme *Programm, xmlElement *xml.Start
     }
   }
 
-  _, metaErr := sql1.Exec(startTime.Unix(), chId, imageDbId, titleId, descrId)
+  _, metaErr := ctx.sql1.Exec(startTime.Unix(), chId, imageDbId, titleId, descrId)
   if (metaErr != nil) {
     Bail("Meta INSERT failed\n %s\n", metaErr.Error())
   }
