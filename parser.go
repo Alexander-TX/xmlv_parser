@@ -12,12 +12,14 @@ import (
     "strconv"
     "strings"
     "runtime"
+    "net/http"
     "io/ioutil"
     "unicode/utf8"
     "database/sql"
     "encoding/xml"
     "path/filepath"
     "compress/gzip"
+    "mime/multipart"
     "golang.org/x/net/html/charset"
 )
 
@@ -70,6 +72,7 @@ var xmltvTzOverride *time.Location
 
 var eltDateFormat string
 var useLegacyFormat bool
+var startServer bool
 
 var ageRegexp *regexp.Regexp
 var timeRegexp1 *regexp.Regexp
@@ -123,7 +126,48 @@ func main() {
   flag.BoolVar(&useLegacyFormat, "legacy", false, "Enable generation of legacy EPGX for Android < 21 (with contentless FTS table). Created file won't support snippet() SQL function")
   includeCh := flag.String("include", "", "Optional: comma-separated list of channels to include in generated EPG.")
   excludeCh := flag.String("exclude", "", "Optional: comma-separated list of channels to exclude from generated EPG.")
+  flag.BoolVar(&startServer, "start-server", false, "Start web server, listening on :9448")
   flag.Parse()
+
+  spanDuration = *argDuration
+
+  timeNow := time.Now()
+  timeZone, _ := timeNow.Zone()
+  localLocation = timeNow.Location()
+
+  fmt.Printf("Local time zone: %s (%s)\n", timeZone, localLocation)
+
+  if *xmltvTz == "" {
+    fmt.Printf("XMLTV time zone: take from XMLTV file\n")
+  } else {
+    var tzErr error
+    xmltvTzOverride, tzErr = time.LoadLocation(*xmltvTz)
+    if tzErr != nil {
+      Bail("Failed to load timezone '%s'\n %s\n", *xmltvTz, tzErr.Error())
+    }
+
+    fmt.Printf("XMLTV time zone: overriden with %s\n", *xmltvTz)
+  }
+
+  if (spanDuration.Nanoseconds() == 0) {
+    Bail("Duration must be positive\n")
+  }
+
+  if (*timeStart == "") {
+    startFrom = time.Now()
+  } else {
+    var startFromErr error
+
+    startFrom, startFromErr = time.ParseInLocation(eltDateFormat, *timeStart, localLocation)
+    if (startFromErr != nil) {
+      Bail("Failed to parse start time:\n %s\n", startFromErr.Error())
+    }
+  }
+
+  if startServer {
+    bootstrapServer()
+    return
+  }
 
   seen := make(map[string]bool)
 
@@ -169,41 +213,6 @@ func main() {
 
     for _, chIdToExclude := range channelsToExclude {
       channelBlacklist[chIdToExclude] = struct{}{}
-    }
-  }
-
-  spanDuration = *argDuration
-
-  timeNow := time.Now()
-  timeZone, _ := timeNow.Zone()
-  localLocation = timeNow.Location()
-
-  fmt.Printf("Local time zone: %s (%s)\n", timeZone, localLocation)
-
-  if *xmltvTz == "" {
-    fmt.Printf("XMLTV time zone: take from XMLTV file\n")
-  } else {
-    var tzErr error
-    xmltvTzOverride, tzErr = time.LoadLocation(*xmltvTz)
-    if tzErr != nil {
-      Bail("Failed to load timezone '%s'\n %s\n", *xmltvTz, tzErr.Error())
-    }
-
-    fmt.Printf("XMLTV time zone: overriden with %s\n", *xmltvTz)
-  }
-
-  if (spanDuration.Nanoseconds() == 0) {
-    Bail("Duration must be positive\n")
-  }
-
-  if (*timeStart == "") {
-    startFrom = time.Now()
-  } else {
-    var startFromErr error
-
-    startFrom, startFromErr = time.ParseInLocation(eltDateFormat, *timeStart, localLocation)
-    if (startFromErr != nil) {
-      Bail("Failed to parse start time:\n %s\n", startFromErr.Error())
     }
   }
 
@@ -322,6 +331,12 @@ func main() {
     Bail("%s\n", reqErr.Error())
   }
 
+  fmt.Printf("Compressing database file\n")
+
+  if _, copyErr := io.Copy(gzipWriter, tmpFile); copyErr != nil {
+    Bail("%s\n", copyErr.Error())
+  }
+
   gzipWriter.Flush()
   gzipWriter.Close()
   gzipBufWriter.Flush()
@@ -330,6 +345,18 @@ func main() {
   renameErr := os.Rename(gzTmpFile.Name(), *dbPath)
   if (renameErr != nil) {
     Bail("Failed to move temporary file to output\n %s\n", renameErr.Error())
+  }
+}
+
+func bootstrapServer() {
+  fmt.Print("Starting web server on :9448\n");
+
+  var err error
+
+  http.HandleFunc("/", HomeRouterHandler)
+  err = http.ListenAndServe("127.0.0.1:9448", nil)
+  if err != nil {
+    Bail("ListenAndServe: %s\n", err.Error())
   }
 }
 
@@ -392,7 +419,7 @@ func processXml(ctx RequestContext, dbNam string, xmlFile io.Reader, dbFile io.R
   }
   ctx.sql3, err = bulkTx.Prepare("INSERT INTO uri (_id, uri) VALUES (?, ?);")
   if err != nil {
-    Bail("Prepare() failed: %s\n", err.Error())
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
   }
   ctx.sql4, err = bulkTx.Prepare("INSERT INTO text (docid, text) VALUES (?, ?);")
   if err != nil {
@@ -411,7 +438,7 @@ root:
   for {
     token, xmlErr := decoder.Token()
     if xmlErr != nil {
-      Bail("XMLTV file is malformed (failed to find root tag)\n")
+      return errors.New("XMLTV file is malformed (failed to find root tag)\n")
     }
 
     switch xmlRoot := token.(type) {
@@ -421,7 +448,7 @@ root:
         if (xmlRoot.Name.Local == "tv") {
           break root;
         } else {
-          Bail("malformed XMLTV: <tv> tag not found, got <%s> instead\n", xmlRoot.Name.Local)
+          return errors.New(s("malformed XMLTV: <tv> tag not found, got <%s> instead\n", xmlRoot.Name.Local))
         }
     }
   }
@@ -444,7 +471,7 @@ root:
       if tokenErr == io.EOF {
         break
       } else {
-        Bail("Failed to read token\n %s\n", tokenErr.Error())
+        return errors.New(s("Failed to read token\n %s\n", tokenErr.Error()))
       }
     }
 
@@ -459,13 +486,23 @@ root:
           // (old values will be kept for unset JSON fields)
           channel = &Channel{}
 
-          if (addChannel(ctx, decoder, channel, &startElement)) {
+          added, err := addChannel(ctx, decoder, channel, &startElement)
+          if err != nil {
+            return err
+          }
+
+          if added {
             appendedChannels += 1;
           }
         } else if (startElement.Name.Local == "programme") {
           programme = &Programm{}
 
-          if (addElement(ctx, decoder, programme, &startElement)) {
+          added, err := addElement(ctx, decoder, programme, &startElement)
+          if err != nil {
+            return err
+          }
+
+          if added {
             appendedElements += 1;
           }
         } else {
@@ -487,7 +524,7 @@ root:
       emptyErrStr += fmt.Sprintf(", first slot is at %s", (*dbEarliestDate).Format(eltDateFormat))
     }
 
-    Bail("%s\n", emptyErrStr)
+    return errors.New(s("%s\n", emptyErrStr))
   }
 
   bulkTx.Commit()
@@ -537,23 +574,6 @@ root:
     return errors.New(s("VACUUM failed\n %s\n", vacuumErr.Error()))
   }
 
-  fmt.Printf("Compressing database file\n")
-
-  buf := make([]byte, 128 * 1024)
-
-  for {
-    n, readErr := dbFile.Read(buf)
-    if readErr != nil && readErr != io.EOF {
-      return errors.New(s("%s\n", readErr.Error()))
-    }
-    if n == 0 {
-      break
-    }
-    if _, writeErr := destWriter.Write(buf[:n]); writeErr != nil {
-      return errors.New(s("%s\n", writeErr.Error()))
-    }
-  }
-
   return nil
 }
 
@@ -563,7 +583,7 @@ func parseXmltvDate(source string) (time.Time, error) {
 
   timeMatch := timeRegexp1.FindStringSubmatch(source)
   if timeMatch == nil {
-    Bail("Failed to parse date: %s\n", source)
+    return time.Time{}, errors.New(s("Failed to parse date: %s\n", source))
   }
 
   if xmltvTzOverride != nil {
@@ -575,10 +595,10 @@ func parseXmltvDate(source string) (time.Time, error) {
   }
 }
 
-func addChannel(ctx RequestContext, decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartElement) bool {
+func addChannel(ctx RequestContext, decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartElement) (bool, error) {
   decErr := decoder.DecodeElement(channel, xmlElement)
   if (decErr != nil) {
-    Bail("Could not decode element\n %s\n", decErr.Error())
+    return false, errors.New(s("Could not decode element\n %s\n", decErr.Error()))
   }
 
   var imageUri sql.NullString
@@ -591,7 +611,7 @@ func addChannel(ctx RequestContext, decoder *xml.Decoder, channel *Channel, xmlE
   }
 
   if (channel.Name == "" || channel.Id == "") {
-    return false;
+    return false, nil
   }
 
   chId := channel.Id
@@ -611,12 +631,12 @@ func addChannel(ctx RequestContext, decoder *xml.Decoder, channel *Channel, xmlE
 
   if len(channelWhitelist) != 0 {
     if _, ok := channelWhitelist[chId]; !ok {
-      return false
+      return false, nil
     }
   }
 
   if _, blacklisted := channelBlacklist[chId]; blacklisted {
-    return false
+    return false, nil
   }
 
   if archived > 0 {
@@ -630,16 +650,16 @@ func addChannel(ctx RequestContext, decoder *xml.Decoder, channel *Channel, xmlE
 
   _, chInsertErr := ctx.sql5.Exec(chId, imageUri, strings.ToLower(channel.Name), archived)
   if chInsertErr != nil {
-    Bail("Failed to insert into channels table\n", chInsertErr.Error())
+    return false, errors.New(s("Failed to insert into channels table\n", chInsertErr.Error()))
   }
 
-  return true;
+  return true, nil;
 }
 
-func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, xmlElement *xml.StartElement) bool {
+func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, xmlElement *xml.StartElement) (bool, error) {
   decErr := decoder.DecodeElement(programme, xmlElement)
   if (decErr != nil) {
-    Bail("Could not decode element\n %s\n", decErr.Error())
+    return false, errors.New(s("Could not decode element\n %s\n", decErr.Error()))
   }
 
   chId := programme.Channel
@@ -652,17 +672,17 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
 
   if len(channelWhitelist) != 0 {
     if _, ok := channelWhitelist[chId]; !ok {
-      return false
+      return false, nil
     }
   }
 
   if _, blacklisted := channelBlacklist[chId]; blacklisted {
-    return false
+    return false, nil
   }
 
   startTime, timeErr := parseXmltvDate(programme.Start)
   if (timeErr != nil) {
-    Bail("Failed to parse start time\n %s\n", timeErr.Error())
+    return false, errors.New(s("Failed to parse start time\n %s\n", timeErr.Error()))
   }
 
   startTime = time.Unix(startTime.Unix(), 0).In(localLocation)
@@ -671,14 +691,14 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
     if (dbLastDate == nil || startTime.After(*dbLastDate)) {
       dbLastDate = &startTime
     }
-    return false;
+    return false, nil
   }
 
   if (startFrom.Add(spanDuration).Before(startTime)) {
     if (dbEarliestDate == nil || startTime.Before(*dbEarliestDate)) {
       dbEarliestDate = &startTime
     }
-    return false
+    return false, nil
   }
 
   progTitle := programme.Title
@@ -713,7 +733,7 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
 
     _, ftsTitleTextErr := ctx.sql4.Exec(titleId, progTitle)
     if (ftsTitleTextErr != nil) {
-      Bail("text INSERT failed\n %s\n", ftsTitleTextErr.Error())
+      return false, errors.New(s("text INSERT failed\n %s\n", ftsTitleTextErr.Error()))
     }
 
     if useLegacyFormat {
@@ -722,7 +742,7 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
 
     _, ftsTitleErr := ctx.sql2.Exec(titleId, progTitle)
     if (ftsTitleErr != nil) {
-      Bail("FTS INSERT failed\n %s\n", ftsTitleErr.Error())
+      return false, errors.New(s("FTS INSERT failed\n %s\n", ftsTitleErr.Error()))
     }
   }
 
@@ -741,7 +761,7 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
 
     _, ftsDescrTextErr := ctx.sql4.Exec(descrId, progDescription)
     if (ftsDescrTextErr != nil) {
-      Bail("text INSERT failed\n %s\n", ftsDescrTextErr.Error())
+      return false, errors.New(s("text INSERT failed\n %s\n", ftsDescrTextErr.Error()))
     }
 
     if useLegacyFormat {
@@ -749,7 +769,7 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
     }
     _, ftsErr := ctx.sql2.Exec(descrId, progDescription)
     if (ftsErr != nil) {
-      Bail("FTS INSERT failed\n %s\n", ftsErr.Error())
+      return false, errors.New(s("FTS INSERT failed\n %s\n", ftsErr.Error()))
     }
 
     trimmedTotal += trimmed
@@ -771,7 +791,7 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
 
       _, uriErr := ctx.sql3.Exec(uriId, firstUri)
       if (uriErr != nil) {
-        Bail("URI INSERT failed\n %s\n", uriErr.Error())
+        return false, errors.New(s("URI INSERT failed\n %s\n", uriErr.Error()))
       }
     }
 
@@ -783,8 +803,117 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
 
   _, metaErr := ctx.sql1.Exec(startTime.Unix(), chId, imageDbId, titleId, descrId)
   if (metaErr != nil) {
-    Bail("Meta INSERT failed\n %s\n", metaErr.Error())
+    return false, errors.New(s("Meta INSERT failed\n %s\n", metaErr.Error()))
   }
 
-  return true
+  return true, nil
+}
+
+func HomeRouterHandler(w http.ResponseWriter, r *http.Request) {
+  r.Close = true
+
+  if r.Method != "POST" {
+    http.Error(w, "Access denied", http.StatusMethodNotAllowed)
+    return
+  }
+
+  var err error
+
+  var sizeInt int
+
+  reqSize := r.Header.Get("Content-Length")
+  if reqSize != "" {
+    if sizeInt, err = strconv.Atoi(reqSize); err != nil {
+      http.Error(w, "Invalid request", http.StatusBadRequest)
+      return
+    }
+
+    if sizeInt > 536870912 { // 512Mb
+      fmt.Fprintf(os.Stderr, "Size too big: %d\n", sizeInt)
+      http.Error(w, "The file is too big", http.StatusRequestEntityTooLarge)
+      return
+    }
+  } else {
+    fmt.Fprintf(os.Stderr, "No content-length\n")
+    http.Error(w, "Content length is required", http.StatusLengthRequired)
+    return
+  }
+
+  fmt.Fprintf(os.Stderr, "Parsing request\n")
+
+  var formReader *multipart.Reader
+
+  if formReader, err = r.MultipartReader(); err != nil {
+    fmt.Fprintf(os.Stderr, "Invalid multipart data:\n %s\n", err.Error())
+    http.Error(w, "Invalid request", http.StatusBadRequest)
+    return
+  }
+
+  var formPart *multipart.Part
+
+  if formPart, err = formReader.NextPart(); err != nil {
+    fmt.Fprintf(os.Stderr, "Invalid part:\n %s\n", err.Error())
+    http.Error(w, "Invalid form component", http.StatusBadRequest)
+    return
+  }
+
+  if formPart.FormName() != "xmltv" {
+    http.Error(w, "Access denied", http.StatusBadRequest)
+    return
+  }
+
+  fmt.Fprintf(os.Stderr, "Checks passed\n")
+
+  tmpFile, tmpErr := ioutil.TempFile("", "db-*.sqlite")
+  if tmpErr != nil {
+    http.Error(w, "failed", http.StatusInternalServerError)
+    return
+  }
+
+  defer tmpFile.Close()
+  defer os.Remove(tmpFile.Name())
+
+  db, dbErr := sql.Open("sqlite3", fmt.Sprintf("file:%s", tmpFile.Name()))
+  if dbErr != nil {
+    fmt.Fprintf(os.Stderr, "SQLite open() failed: %s\n", dbErr.Error())
+    http.Error(w, "failed", http.StatusInternalServerError)
+    return
+  }
+
+  // we want to delete the database file ASAP after opening it
+  // to avoid leaving leftover trash behind in event of server crash
+  // but go's sql bridge is lazy — it doesn't create connection until first command
+  // so we force the SQLite file to be created by calling Ping()
+  db.Ping()
+
+  if err = os.Remove(tmpFile.Name()); err != nil {
+    fmt.Fprintf(os.Stderr, "Failed to remove temp SQLite file: %s\n", err.Error())
+  }
+
+  defer db.Close()
+
+  xmlStreamReader := http.MaxBytesReader(w, formPart, 536870912)
+
+  var ctx = RequestContext{}
+
+  ctx.db = db
+
+  err = processXml(ctx, "main", xmlStreamReader, tmpFile, w)
+
+  xmlStreamReader.Close()
+
+  if err != nil {
+    fmt.Fprintf(os.Stderr, "Conversion failed: %s\n", err.Error())
+    http.Error(w, "failed", http.StatusInternalServerError)
+    return
+  }
+
+  respHeader := w.Header()
+  respHeader.Add("Content-Disposition", "attachment; filename=\"schedule.epgx\"")
+  respHeader.Add("Content-Type", "application/vnd.sqlite3")
+  respHeader.Del("Accept-Ranges")
+
+  http.ServeContent(w, r, "schedule.epgx", time.Time{}, tmpFile)
+
+  fmt.Printf("Done\n")
 }
