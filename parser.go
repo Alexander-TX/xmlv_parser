@@ -898,7 +898,9 @@ func HomeRouterHandler(w http.ResponseWriter, r *http.Request) {
 
   ctx.db = db
 
-  err = processXml(ctx, "main", xmlStreamReader, tmpFile, w)
+  largeBuffer := bufio.NewReaderSize(xmlStreamReader, 1024 * 128)
+
+  err = processXml(ctx, "main", largeBuffer, tmpFile, w)
 
   xmlStreamReader.Close()
 
