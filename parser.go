@@ -12,6 +12,7 @@ import (
     "strconv"
     "strings"
     "runtime"
+    "net/url"
     "net/http"
     "io/ioutil"
     "unicode/utf8"
@@ -70,6 +71,7 @@ var dbLastDate *time.Time
 var localLocation *time.Location
 var xmltvTzOverride *time.Location
 
+var imageBaseUrl string
 var eltDateFormat string
 var useLegacyFormat bool
 var startServer bool
@@ -127,6 +129,7 @@ func main() {
   includeCh := flag.String("include", "", "Optional: comma-separated list of channels to include in generated EPG.")
   excludeCh := flag.String("exclude", "", "Optional: comma-separated list of channels to exclude from generated EPG.")
   flag.BoolVar(&startServer, "start-server", false, "Start web server, listening on :9448")
+  imageBase := flag.String("rewrite-url", "", "Optional: replace base URL of EPG images with specified")
   flag.Parse()
 
   spanDuration = *argDuration
@@ -167,6 +170,10 @@ func main() {
   if startServer {
     bootstrapServer()
     return
+  }
+
+  if imageBase != nil {
+    imageBaseUrl = *imageBase
   }
 
   seen := make(map[string]bool)
@@ -781,6 +788,16 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
     //fmt.Printf("image = %s", programme.Images[0].Uri)
 
     firstUri := programme.Images[0].Uri
+
+    if imageBaseUrl != "" {
+      parsedUrl, urlErr := url.Parse(firstUri)
+
+      if urlErr == nil && parsedUrl.IsAbs() {
+        parsedUrl.Host = imageBaseUrl
+
+        firstUri = parsedUrl.String()
+      }
+    }
 
     uriId := uriMap[firstUri]
     if uriId == 0 {
