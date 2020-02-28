@@ -71,7 +71,7 @@ var dbLastDate *time.Time
 var localLocation *time.Location
 var xmltvTzOverride *time.Location
 
-var imageBaseUrl string
+var imageBaseUrl *url.URL
 var eltDateFormat string
 var useLegacyFormat bool
 var startServer bool
@@ -172,8 +172,16 @@ func main() {
     return
   }
 
-  if imageBase != nil {
-    imageBaseUrl = *imageBase
+  if *imageBase != "" {
+    var urlErr error
+
+    imageBaseUrl, urlErr = url.Parse(*imageBase)
+
+    fmt.Fprintf(os.Stderr, "HAS URI")
+
+    if urlErr != nil {
+      Bail("Invalid base url specified:\n %s\n", urlErr.Error())
+    }
   }
 
   seen := make(map[string]bool)
@@ -542,6 +550,10 @@ root:
     fmt.Printf("WARNING: none of %d mappings were used!\n", len(idMap))
   }
 
+  if archivedChannels == 0 {
+    fmt.Printf("WARNING: none of channels have archive!\n", len(idMap))
+  }
+
   if (snippetLength >= 0) {
      fmt.Printf("Trimmed %d characters. Max length before trimming: %d\n", trimmedTotal, snippetLengthMax)
   }
@@ -789,11 +801,19 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
 
     firstUri := programme.Images[0].Uri
 
-    if imageBaseUrl != "" {
+    if imageBaseUrl != nil {
       parsedUrl, urlErr := url.Parse(firstUri)
 
       if urlErr == nil && parsedUrl.IsAbs() {
-        parsedUrl.Host = imageBaseUrl
+        parsedUrl.Host = imageBaseUrl.Host
+
+        if imageBaseUrl.Scheme != "" {
+          parsedUrl.Scheme = imageBaseUrl.Scheme
+        }
+
+        if imageBaseUrl.Path != "" && imageBaseUrl.Path != "/" {
+          parsedUrl.Path = imageBaseUrl.Path + parsedUrl.Path
+        }
 
         firstUri = parsedUrl.String()
       }
