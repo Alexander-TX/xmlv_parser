@@ -77,7 +77,13 @@ func flushNdx() {
 }
 
 func main() {
-  //defer func() { os.Exit(exitCode) }()
+  defer func() {
+    if r := recover(); r != nil {
+      panic(r)
+    } else {
+      os.Exit(exitCode)
+    }
+  }()
 
   var Usage = func() {
     fmt.Fprintf(os.Stderr, "Simple EPGX to JTV converter\n\n")
@@ -135,7 +141,10 @@ func main() {
   if strings.HasSuffix(*dbPath, ".gz") {
     fmt.Fprintf(os.Stderr, "Detected .gz extension, writing EPGX database to temporary file...\n")
 
-    gzipReader, _ := gzip.NewReader(bufio.NewReader(dbFile))
+    gzipReader, gzErr := gzip.NewReader(bufio.NewReader(dbFile))
+    if gzErr != nil {
+      Bail("Failed to open gzip archive\n %s\n", gzErr.Error())
+    }
 
     var tmpDbErr error
 
