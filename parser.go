@@ -4,6 +4,7 @@ import (
     "os"
     "io"
     "fmt"
+    "sort"
     "flag"
     "time"
     "bufio"
@@ -38,6 +39,7 @@ type Programm struct {
  Title                 string             `xml:"title"`
  Description           string             `xml:"desc"`
  Images                []ImageUri         `xml:"icon"`
+ Categories            []string           `xml:"category"`
 }
 
 type ImageUri struct {
@@ -50,8 +52,13 @@ type ChannelMeta struct {
   ImageUrlOverride     string
 }
 
+type TagMeta struct {
+  NumberOfUses         int64
+  IdVal                int64
+}
+
 type RequestContext struct {
-  sql1, sql2, sql3, sql4, sql5 *sql.Stmt
+  sql1, sql2, sql3, sql4, sql5, sql6, sql7 *sql.Stmt
   db *sql.DB
 }
 
@@ -60,6 +67,7 @@ var spanDuration time.Duration
 var stringMap map[string]int64
 var uriMap map[string]int64
 var idMap map[string]ChannelMeta
+var tagMap map[string]*TagMeta
 
 var uriIdMax, textIdMax int64
 
@@ -113,6 +121,7 @@ func main() {
 
   stringMap = make(map[string]int64)
   uriMap = make(map[string]int64)
+  tagMap = make(map[string]*TagMeta)
 
   eltDateFormat = "02-01-2006 15:04"
 
@@ -402,19 +411,27 @@ func processXml(ctx RequestContext, dbNam string, xmlFile io.Reader, dbFile io.R
   if useLegacyFormat {
     fmt.Fprintf(os.Stderr, "Using legacy format: tokenize=porter\n")
 
-    _, err = db.Exec(s("CREATE VIRTUAL TABLE %s.fts_search USING fts4(content='', matchinfo='fts3', text, tokenize=porter);", dbNam))
+    _, err = db.Exec(s("CREATE VIRTUAL TABLE %s.fts_search USING fts4(content='', matchinfo='fts3', prefix='3', text, tokenize=porter);", dbNam))
   } else {
-    _, err = db.Exec(s("CREATE VIRTUAL TABLE %s.fts_search USING fts4(content='text', matchinfo='fts3', text, tokenize=unicode61);", dbNam))
+    _, err = db.Exec(s("CREATE VIRTUAL TABLE %s.fts_search USING fts4(content='text', matchinfo='fts3', prefix='3', text, tokenize=unicode61);", dbNam))
   }
 
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
-  _, err = db.Exec(s("CREATE TABLE %s.search_meta (_id INTEGER PRIMARY KEY, ch_id, image_uri INTEGER, start_time INTEGER, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL);", dbNam))
+  _, err = db.Exec(s("CREATE TABLE %s.search_meta (_id INTEGER PRIMARY KEY, ch_id, start_time INTEGER, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL, tags INTEGER NOT NULL, image_uri INTEGER);", dbNam))
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
   _, err = db.Exec(s("CREATE TABLE %s.uri (_id INTEGER PRIMARY KEY, uri TEXT)", dbNam))
+  if err != nil {
+    return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
+  }
+  _, err = db.Exec(s("CREATE TABLE %s.tags (_id INTEGER PRIMARY KEY, tag TEXT NOT NULL)", dbNam))
+  if err != nil {
+    return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
+  }
+  _, err = db.Exec(s("CREATE TABLE %s.eltex_temp_search_tags (_id INTEGER PRIMARY KEY, tag_list TEXT)", dbNam))
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
@@ -424,7 +441,7 @@ func processXml(ctx RequestContext, dbNam string, xmlFile io.Reader, dbFile io.R
     return errors.New(s("Could not start transaction\n %s\n", txErr.Error()))
   }
 
-  ctx.sql1, err = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, image_uri, title_id, description_id) VALUES (?, ?, ?, ?, ?);")
+  ctx.sql1, err = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, image_uri, title_id, description_id, tags) VALUES (?, ?, ?, ?, ?, ?);")
   if err != nil {
     return errors.New(s("Prepare() failed: %s\n", err.Error()))
   }
@@ -441,6 +458,14 @@ func processXml(ctx RequestContext, dbNam string, xmlFile io.Reader, dbFile io.R
     return errors.New(s("Prepare() failed: %s\n", err.Error()))
   }
   ctx.sql5, err = bulkTx.Prepare("INSERT INTO channels (ch_id, image_uri, name, archive_time) VALUES (?, ?, ?, ?);")
+  if err != nil {
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
+  }
+  ctx.sql6, err = bulkTx.Prepare("INSERT INTO tags (_id, tag) VALUES (?, ?);")
+  if err != nil {
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
+  }
+  ctx.sql7, err = bulkTx.Prepare("INSERT INTO eltex_temp_search_tags (_id, tag_list) VALUES (?, ?);")
   if err != nil {
     return errors.New(s("Prepare() failed: %s\n", err.Error()))
   }
@@ -542,21 +567,116 @@ root:
     return errors.New(s("%s\n", emptyErrStr))
   }
 
+  tagList := make([]string, 0, len(tagMap))
+
+  for tag, _ := range tagMap {
+    tagList = append(tagList, tag)
+  }
+
+  sort.Slice(tagList, func(i, j int) bool {
+    return tagMap[tagList[i]].NumberOfUses > tagMap[tagList[j]].NumberOfUses
+  })
+
+  for pos, tag := range tagList {
+    // sqlite supports only signed values, so we are limited to 63 bits
+    if pos > 62 {
+      break
+    }
+
+    idVal := 1 << pos
+
+    //fmt.Printf("Adding new tag '%s' (value is %d, number of uses is %d)\n", tag, idVal, tagMap[tag].NumberOfUses)
+
+    _, tInsertErr := ctx.sql6.Exec(idVal, tag)
+    if tInsertErr != nil {
+      return errors.New(s("Failed to insert into tags table\n", tInsertErr.Error()))
+    }
+
+    tagMap[tag].IdVal = int64(idVal)
+  }
+
   bulkTx.Commit()
 
   fmt.Printf("Inserted %d channels (%d archived), %d programm entries, %d unique strings\n", appendedChannels, archivedChannels, appendedElements, textIdMax)
+
+  if (len(tagMap) > 63) {
+    fmt.Printf("Original XMLTV file has %d tags, the most popular 63 will be added to EPGX\n", len(tagMap))
+  }
 
   if mappedTotal == 0 && len(idMap) != 0 {
     fmt.Printf("WARNING: none of %d mappings were used!\n", len(idMap))
   }
 
   if archivedChannels == 0 {
-    fmt.Printf("WARNING: none of channels have archive!\n", len(idMap))
+    fmt.Printf("WARNING: none of channels have archive!\n")
   }
 
   if (snippetLength >= 0) {
      fmt.Printf("Trimmed %d characters. Max length before trimming: %d\n", trimmedTotal, snippetLengthMax)
   }
+
+  rows, queryErr := db.Query("SELECT _id, tag_list FROM eltex_temp_search_tags")
+  if queryErr != nil {
+    Bail("Failed to request EPG rows from database\n %s\n", queryErr.Error())
+  }
+
+  dbIds := make([]int64, 0)
+  dbCats := make([]int64, 0)
+
+  for rows.Next() {
+    var rowId int64
+    var rowCats string
+
+    scanErr := rows.Scan(&rowId, &rowCats)
+    if scanErr != nil {
+      Bail("SQLite error\n %s\n", scanErr.Error())
+    }
+
+    dbIds = append(dbIds, rowId)
+
+    var catVal int64
+
+    catVal = 0
+
+    for _, catName := range strings.Split(rowCats, ",") {
+      if catName == "" {
+        continue
+      }
+
+      catIdx := tagMap[catName].IdVal
+
+      if catIdx == 0 {
+        continue
+      }
+
+      catVal |= catIdx
+    }
+
+    dbCats = append(dbCats, catVal)
+  }
+
+  caTx, caTxErr := db.Begin()
+  if caTxErr != nil {
+    return errors.New(s("Could not start transaction\n %s\n", caTxErr.Error()))
+  }
+
+  updateSql, prepErr := caTx.Prepare("UPDATE search_meta SET tags = ? WHERE _id = ?;")
+  if prepErr != nil {
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
+  }
+
+  for pos, itemId := range dbIds {
+    itemCatVal := dbCats[pos]
+
+    updateSql.Exec(itemCatVal, itemId)
+  }
+
+  _, err = caTx.Exec("DROP TABLE eltex_temp_search_tags")
+  if err != nil {
+    Bail("Failed to delete aux table: %s\n", err.Error())
+  }
+
+  caTx.Commit()
 
   _, timeIdxErr := db.Exec(s("CREATE INDEX %s.time_idx ON search_meta (start_time);", dbNam))
   if timeIdxErr != nil {
@@ -576,6 +696,11 @@ root:
   _, indexErr3 := db.Exec(s("CREATE INDEX %s.title_idx ON search_meta (title_id);", dbNam))
   if indexErr3 != nil {
     return errors.New(s("index creation failed\n %s\n", indexErr3.Error()))
+  }
+
+  _, indexErr4 := db.Exec(s("CREATE INDEX idx_tags ON search_meta(tags);", dbNam))
+  if indexErr4 != nil {
+    return errors.New(s("index creation failed\n %s\n", indexErr4.Error()))
   }
 
   _, optimizeErr := db.Exec(s("INSERT INTO %s.fts_search(fts_search) VALUES('optimize');", dbNam))
@@ -838,9 +963,54 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
     }
   }
 
-  _, metaErr := ctx.sql1.Exec(startTime.Unix(), chId, imageDbId, titleId, descrId)
+  progCategories := programme.Categories
+
+  for _, rawCategory := range progCategories {
+    nestedCats := strings.Split(rawCategory, ",")
+
+    for _, category := range nestedCats {
+      category = strings.TrimSpace(category)
+
+      tagInfo := tagMap[category]
+
+      if tagInfo == nil {
+        newTagInfo := TagMeta{
+          NumberOfUses: 1,
+          IdVal: 0,
+        }
+
+        tagMap[category] = &newTagInfo
+
+        //fmt.Printf("Adding new tag %s for %s\n", category, progTitle)
+      } else {
+        tagInfo.NumberOfUses += 1
+      }
+    }
+  }
+
+  var caStr strings.Builder
+
+  for _, ca := range programme.Categories {
+    nestedCats := strings.Split(ca, ",")
+
+    for _, nca := range nestedCats {
+      caStr.WriteString(strings.TrimSpace(nca))
+      caStr.WriteString(",")
+    }
+  }
+
+  catsColumn := caStr.String()
+
+  metaRes, metaErr := ctx.sql1.Exec(startTime.Unix(), chId, imageDbId, titleId, descrId, 0)
   if (metaErr != nil) {
     return false, errors.New(s("Meta INSERT failed\n %s\n", metaErr.Error()))
+  }
+
+  insertId, _ := metaRes.LastInsertId()
+
+  _, tagsErr := ctx.sql7.Exec(insertId, catsColumn)
+  if tagsErr != nil {
+    return false, errors.New(s("Meta INSERT failed\n %s\n", tagsErr.Error()))
   }
 
   return true, nil
