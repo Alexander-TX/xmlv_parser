@@ -1,6 +1,9 @@
 #!/bin/bash -ex
-wget -N 'https://dl.google.com/go/go1.12.7.linux-amd64.tar.gz'
-tar xf 'go1.12.7.linux-amd64.tar.gz'
+wget -N 'https://dl.google.com/go/go1.14.linux-amd64.tar.gz'
+
+rm -rf go
+
+tar xf 'go1.14.linux-amd64.tar.gz'
 
 mkdir -p bin src
 
