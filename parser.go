@@ -698,7 +698,7 @@ root:
     return errors.New(s("index creation failed\n %s\n", indexErr3.Error()))
   }
 
-  _, indexErr4 := db.Exec(s("CREATE INDEX idx_tags ON search_meta(tags);", dbNam))
+  _, indexErr4 := db.Exec(s("CREATE INDEX %s.idx_tags ON search_meta(tags);", dbNam))
   if indexErr4 != nil {
     return errors.New(s("index creation failed\n %s\n", indexErr4.Error()))
   }
