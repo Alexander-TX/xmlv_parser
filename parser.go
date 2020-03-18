@@ -574,7 +574,16 @@ root:
   }
 
   sort.Slice(tagList, func(i, j int) bool {
-    return tagMap[tagList[i]].NumberOfUses > tagMap[tagList[j]].NumberOfUses
+    left := tagMap[tagList[i]].NumberOfUses
+    right := tagMap[tagList[j]].NumberOfUses
+
+    if left > right {
+      return true
+    } else if left < right {
+      return false
+    }
+
+    return tagList[i] < tagList[j]
   })
 
   for pos, tag := range tagList {
