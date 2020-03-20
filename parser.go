@@ -134,7 +134,7 @@ func main() {
   flag.IntVar(&snippetLength, "snippet", -1, "description length limit. If negative, descriptions aren't clipped.")
   nameMapFile := flag.String("xmap", "", "Optional: file with pipe-separated ID mappings. (default none)")
   xmltvTz := flag.String("tz", "", "Optional: replace timezone in XMLTV file. Example: 'Asia/Novosibirsk'. (default none)")
-  flag.BoolVar(&useLegacyFormat, "legacy", false, "Enable generation of legacy EPGX for Android < 21 (with contentless FTS table). Created file won't support snippet() SQL function")
+  flag.BoolVar(&useLegacyFormat, "legacy", true, "Deprecated: this option does nothing")
   includeCh := flag.String("include", "", "Optional: comma-separated list of channels to include in generated EPG.")
   excludeCh := flag.String("exclude", "", "Optional: comma-separated list of channels to exclude from generated EPG.")
   flag.BoolVar(&startServer, "start-server", false, "Start web server, listening on :9448")
@@ -185,8 +185,6 @@ func main() {
     var urlErr error
 
     imageBaseUrl, urlErr = url.Parse(*imageBase)
-
-    fmt.Fprintf(os.Stderr, "HAS URI")
 
     if urlErr != nil {
       Bail("Invalid base url specified:\n %s\n", urlErr.Error())
