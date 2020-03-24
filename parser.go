@@ -413,7 +413,7 @@ func processXml(ctx RequestContext, dbNam string, xmlFile io.Reader, dbFile io.R
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
-  _, err = db.Exec(s("CREATE TABLE %s.channels (_id INTEGER PRIMARY KEY, image_uri TEXT, ch_id TEXT NOT NULL UNIQUE, name TEXT, archive_time INTEGER NOT NULL);", dbNam))
+  _, err = db.Exec(s("CREATE TABLE %s.channels (_id INTEGER PRIMARY KEY, image_uri TEXT, ch_id NOT NULL UNIQUE, name TEXT, archive_time INTEGER NOT NULL);", dbNam))
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
@@ -429,7 +429,7 @@ func processXml(ctx RequestContext, dbNam string, xmlFile io.Reader, dbFile io.R
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
-  _, err = db.Exec(s("CREATE TABLE %s.search_meta (_id INTEGER PRIMARY KEY, ch_id, start_time INTEGER, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL, tags INTEGER NOT NULL, image_uri INTEGER);", dbNam))
+  _, err = db.Exec(s("CREATE TABLE %s.search_meta (_id INTEGER PRIMARY KEY, ch_id NOT NULL, start_time INTEGER NOT NULL, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL, tags INTEGER NOT NULL, image_uri INTEGER);", dbNam))
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
