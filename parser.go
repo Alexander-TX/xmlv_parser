@@ -62,6 +62,8 @@ type RequestContext struct {
   db *sql.DB
 }
 
+var EltexPackageVersion = "unknown"
+
 var startFrom time.Time
 var spanDuration time.Duration
 var stringMap map[string]int64
@@ -139,7 +141,15 @@ func main() {
   excludeCh := flag.String("exclude", "", "Optional: comma-separated list of channels to exclude from generated EPG.")
   flag.BoolVar(&startServer, "start-server", false, "Start web server, listening on :9448")
   imageBase := flag.String("rewrite-url", "", "Optional: replace base URL of EPG images with specified")
+  showVersion := flag.Bool("version", false, "Write version information to standard output")
   flag.Parse()
+
+  if *showVersion {
+    fmt.Printf("%s\n", EltexPackageVersion)
+    os.Exit(0)
+  }
+
+  fmt.Printf("Version: %s\n", EltexPackageVersion)
 
   spanDuration = *argDuration
 

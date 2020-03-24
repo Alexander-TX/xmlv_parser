@@ -23,6 +23,8 @@ import (
 
 import _ "gitlab.eltex.loc/aleksandr.rvachev/go-sqlite3.git"
 
+var EltexPackageVersion = "unknown"
+
 var db *sql.DB
 var jtv *zip.Writer
 
@@ -98,7 +100,15 @@ func main() {
   jtvCharset := flag.String("charset", "UTF-8", "jtv title charset.")
   zipCharset := flag.String("zip-charset", "UTF-8", "zip filename charset.")
   offsetFlag := flag.Int("offset-time", 0, "number of hours to add to each date")
+  showVersion := flag.Bool("version", false, "Write version information to standard output")
   flag.Parse()
+
+  if *showVersion {
+    fmt.Printf("%s\n", EltexPackageVersion)
+    os.Exit(0)
+  }
+
+  fmt.Printf("Version: %s\n", EltexPackageVersion)
 
   hoursOffset = *offsetFlag
 
