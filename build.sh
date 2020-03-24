@@ -1,4 +1,7 @@
 #!/bin/bash -ex
+
+export LANG=C
+
 wget -N 'https://dl.google.com/go/go1.14.linux-amd64.tar.gz'
 
 rm -rf go
@@ -24,8 +27,10 @@ export CGO_ENABLED=1
 mkdir -p bin src
 
 VER=1.0-$(git rev-parse --short HEAD)
+BUILDER="$(whoami)@$(hostname)"
+BUILD_TIME="$(date +'%d %B %Y %H:%M')"
 
-LDFLAGS=-ldflags="-X main.EltexPackageVersion=$VER"
+LDFLAGS=-ldflags="-X main.EltexPackageVersion=$VER -X \"main.EltexBuilder=$BUILDER\"  -X \"main.EltexBuildTime=$BUILD_TIME\""
 
 GOARCH=386 go build "$LDFLAGS" -o parser_32.bin parser.go
 GOARCH=amd64 go build "$LDFLAGS" -o parser_64.bin parser.go

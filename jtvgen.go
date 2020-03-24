@@ -24,6 +24,8 @@ import (
 import _ "gitlab.eltex.loc/aleksandr.rvachev/go-sqlite3.git"
 
 var EltexPackageVersion = "unknown"
+var EltexBuilder = "unknown builder"
+var EltexBuildTime = "an unknown date"
 
 var db *sql.DB
 var jtv *zip.Writer
@@ -108,7 +110,7 @@ func main() {
     os.Exit(0)
   }
 
-  fmt.Printf("Version: %s\n", EltexPackageVersion)
+  fmt.Printf("Version %s built by %s on %s\n\n", EltexPackageVersion, EltexBuilder, EltexBuildTime)
 
   hoursOffset = *offsetFlag
 

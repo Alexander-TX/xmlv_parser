@@ -63,6 +63,8 @@ type RequestContext struct {
 }
 
 var EltexPackageVersion = "unknown"
+var EltexBuilder = "unknown builder"
+var EltexBuildTime = "an unknown date"
 
 var startFrom time.Time
 var spanDuration time.Duration
@@ -149,7 +151,7 @@ func main() {
     os.Exit(0)
   }
 
-  fmt.Printf("Version: %s\n", EltexPackageVersion)
+  fmt.Printf("Version %s built by %s on %s\n\n", EltexPackageVersion, EltexBuilder, EltexBuildTime)
 
   spanDuration = *argDuration
 
