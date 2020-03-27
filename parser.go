@@ -60,6 +60,10 @@ type TagMeta struct {
 type RequestContext struct {
   sql1, sql2, sql3, sql4, sql5, sql6, sql7 *sql.Stmt
   db *sql.DB
+  stringMap map[string]int64
+  uriMap map[string]int64
+  tagMap map[string]*TagMeta
+  uriIdMax, textIdMax int64
 }
 
 var EltexPackageVersion = "unknown"
@@ -68,12 +72,8 @@ var EltexBuildTime = "an unknown date"
 
 var startFrom time.Time
 var spanDuration time.Duration
-var stringMap map[string]int64
-var uriMap map[string]int64
-var idMap map[string]ChannelMeta
-var tagMap map[string]*TagMeta
 
-var uriIdMax, textIdMax int64
+var idMap map[string]ChannelMeta
 
 var snippetLength int
 
@@ -119,13 +119,6 @@ func main() {
 
   dbEarliestDate = nil
   dbLastDate = nil
-
-  textIdMax = 1
-  uriIdMax = 1
-
-  stringMap = make(map[string]int64)
-  uriMap = make(map[string]int64)
-  tagMap = make(map[string]*TagMeta)
 
   eltDateFormat = "02-01-2006 15:04"
 
@@ -360,7 +353,14 @@ func main() {
 
   ctx.db = db
 
-  reqErr := processXml(ctx, "main", xmlFile, tmpFile, gzipWriter)
+  ctx.stringMap = make(map[string]int64)
+  ctx.uriMap = make(map[string]int64)
+  ctx.tagMap = make(map[string]*TagMeta)
+
+  ctx.textIdMax = 1
+  ctx.uriIdMax = 1
+
+  reqErr := processXml(&ctx, "main", xmlFile, tmpFile, gzipWriter)
   if reqErr != nil {
     Bail("%s\n", reqErr.Error())
   }
@@ -398,7 +398,7 @@ func s(format string, a ...interface{}) string {
   return fmt.Sprintf(format, a...)
 }
 
-func processXml(ctx RequestContext, dbNam string, xmlFile io.Reader, dbFile io.Reader, destWriter io.Writer) error {
+func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader, dbFile io.Reader, destWriter io.Writer) error {
   db := ctx.db
 
   // do not create on-disk temporary files (we don't want to clean them up)
@@ -504,6 +504,8 @@ root:
   }
 
   fmt.Printf("Copying XMLTV schedule to database\n")
+
+  tagMap := ctx.tagMap
 
   ageRegexp = regexp.MustCompile("(.+)\\([0-9]{1,2}\\+\\)$")
   timeRegexp1 = regexp.MustCompile("([0-9]{14})( (?:.+))?$")
@@ -619,7 +621,7 @@ root:
     return errors.New(s("Failed to commit primary transaction\n %s\n", bulkTxError.Error()))
   }
 
-  fmt.Printf("Inserted %d channels (%d archived), %d programm entries, %d unique strings\n", appendedChannels, archivedChannels, appendedElements, textIdMax)
+  fmt.Printf("Inserted %d channels (%d archived), %d programm entries, %d unique strings\n", appendedChannels, archivedChannels, appendedElements, ctx.textIdMax)
 
   if (len(tagMap) > 63) {
     fmt.Printf("Original XMLTV file has %d tags, the most popular 63 will be added to EPGX\n", len(tagMap))
@@ -764,7 +766,7 @@ func parseXmltvDate(source string) (time.Time, error) {
   }
 }
 
-func addChannel(ctx RequestContext, decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartElement) (bool, error) {
+func addChannel(ctx *RequestContext, decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartElement) (bool, error) {
   decErr := decoder.DecodeElement(channel, xmlElement)
   if (decErr != nil) {
     return false, errors.New(s("Could not decode element\n %s\n", decErr.Error()))
@@ -825,7 +827,7 @@ func addChannel(ctx RequestContext, decoder *xml.Decoder, channel *Channel, xmlE
   return true, nil;
 }
 
-func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, xmlElement *xml.StartElement) (bool, error) {
+func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, xmlElement *xml.StartElement) (bool, error) {
   decErr := decoder.DecodeElement(programme, xmlElement)
   if (decErr != nil) {
     return false, errors.New(s("Could not decode element\n %s\n", decErr.Error()))
@@ -893,12 +895,12 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
     }
   }
 
-  titleId := stringMap[progTitle]
+  titleId := ctx.stringMap[progTitle]
   if titleId == 0 {
-    titleId = textIdMax
-    textIdMax += 1
+    titleId = ctx.textIdMax
+    ctx.textIdMax += 1
 
-    stringMap[progTitle] = titleId
+    ctx.stringMap[progTitle] = titleId
 
     _, ftsTitleTextErr := ctx.sql4.Exec(titleId, progTitle)
     if (ftsTitleTextErr != nil) {
@@ -915,7 +917,7 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
     }
   }
 
-  descrId := stringMap[progDescription]
+  descrId := ctx.stringMap[progDescription]
   if descrId == 0 {
     runeLength := utf8.RuneCountInString(programme.Description)
 
@@ -923,10 +925,10 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
       snippetLengthMax = runeLength
     }
 
-    descrId = textIdMax
-    textIdMax += 1
+    descrId = ctx.textIdMax
+    ctx.textIdMax += 1
 
-    stringMap[progDescription] = descrId
+    ctx.stringMap[progDescription] = descrId
 
     _, ftsDescrTextErr := ctx.sql4.Exec(descrId, progDescription)
     if (ftsDescrTextErr != nil) {
@@ -969,12 +971,12 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
       }
     }
 
-    uriId := uriMap[firstUri]
+    uriId := ctx.uriMap[firstUri]
     if uriId == 0 {
-      uriId = uriIdMax
-      uriIdMax += 1
+      uriId = ctx.uriIdMax
+      ctx.uriIdMax += 1
 
-      uriMap[firstUri] = uriId
+      ctx.uriMap[firstUri] = uriId
 
       _, uriErr := ctx.sql3.Exec(uriId, firstUri)
       if (uriErr != nil) {
@@ -996,7 +998,7 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
     for _, category := range nestedCats {
       category = strings.TrimSpace(category)
 
-      tagInfo := tagMap[category]
+      tagInfo := ctx.tagMap[category]
 
       if tagInfo == nil {
         newTagInfo := TagMeta{
@@ -1004,7 +1006,7 @@ func addElement(ctx RequestContext, decoder *xml.Decoder, programme *Programm, x
           IdVal: 0,
         }
 
-        tagMap[category] = &newTagInfo
+        ctx.tagMap[category] = &newTagInfo
 
         //fmt.Printf("Adding new tag %s for %s\n", category, progTitle)
       } else {
@@ -1130,9 +1132,16 @@ func HomeRouterHandler(w http.ResponseWriter, r *http.Request) {
 
   ctx.db = db
 
+  ctx.stringMap = make(map[string]int64)
+  ctx.uriMap = make(map[string]int64)
+  ctx.tagMap = make(map[string]*TagMeta)
+
+  ctx.textIdMax = 1
+  ctx.uriIdMax = 1
+
   largeBuffer := bufio.NewReaderSize(xmlStreamReader, 1024 * 128)
 
-  err = processXml(ctx, "main", largeBuffer, tmpFile, w)
+  err = processXml(&ctx, "main", largeBuffer, tmpFile, w)
 
   xmlStreamReader.Close()
 
