@@ -181,6 +181,9 @@ func main() {
     }
   }
 
+  ageRegexp = regexp.MustCompile("(.+)\\([0-9]{1,2}\\+\\)$")
+  timeRegexp1 = regexp.MustCompile("([0-9]{14})( (?:.+))?$")
+
   if startServer {
     bootstrapServer()
     return
@@ -508,9 +511,6 @@ root:
   fmt.Printf("Copying XMLTV schedule to database\n")
 
   tagMap := ctx.tagMap
-
-  ageRegexp = regexp.MustCompile("(.+)\\([0-9]{1,2}\\+\\)$")
-  timeRegexp1 = regexp.MustCompile("([0-9]{14})( (?:.+))?$")
 
   var appendedElements = 0
   var appendedChannels = 0
