@@ -186,6 +186,8 @@ func main() {
     return
   }
 
+  platform_init()
+
   if *imageBase != "" {
     var urlErr error
 

@@ -110,6 +110,8 @@ func main() {
     os.Exit(0)
   }
 
+  platform_init()
+
   fmt.Printf("Version %s built by %s on %s\n\n", EltexPackageVersion, EltexBuilder, EltexBuildTime)
 
   hoursOffset = *offsetFlag
