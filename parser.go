@@ -614,7 +614,10 @@ root:
     tagMap[tag].IdVal = int64(idVal)
   }
 
-  bulkTx.Commit()
+  bulkTxError := bulkTx.Commit()
+  if bulkTxError != nil {
+    return errors.New(s("Failed to commit primary transaction\n %s\n", bulkTxError.Error()))
+  }
 
   fmt.Printf("Inserted %d channels (%d archived), %d programm entries, %d unique strings\n", appendedChannels, archivedChannels, appendedElements, textIdMax)
 
@@ -695,7 +698,10 @@ root:
     Bail("Failed to delete aux table: %s\n", err.Error())
   }
 
-  caTx.Commit()
+  caTxCommitErr := caTx.Commit()
+  if caTxCommitErr != nil {
+    return errors.New(s("Failed to commit tags transaction\n %s\n", caTxCommitErr.Error()))
+  }
 
   _, timeIdxErr := db.Exec(s("CREATE INDEX %s.time_idx ON search_meta (start_time);", dbNam))
   if timeIdxErr != nil {
