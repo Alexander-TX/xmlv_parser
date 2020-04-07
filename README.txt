@@ -13,3 +13,7 @@ zcat xmltv.xml.gz | ./parser -offset '01-12-2019 09:00' -timespan 9999h -xmap ./
 При необходимости, конвертируем полученный файл в JTV:
 
 ./jtvgen -offset-time +4 -input schedule.epgx.gz -charset "windows-1251" -output jtv-win1251.zip
+
+Проверка EPGX на целостность:
+
+./epgx schedule.epgx.gz

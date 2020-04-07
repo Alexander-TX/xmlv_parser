@@ -26,7 +26,7 @@ export CGO_ENABLED=1
 
 mkdir -p bin src
 
-ELT_VER=1.0.2
+ELT_VER=1.0.3
 VER=$ELT_VER-$(git rev-parse --short HEAD)
 BUILDER="$(whoami)@$(hostname)"
 BUILD_TIME="$(date +'%d %B %Y %H:%M')"
@@ -39,6 +39,9 @@ GOARCH=amd64 go build "$LDFLAGS" -o parser-$ELT_VER-x64.bin parser.go platform_d
 GOARCH=386 go build "$LDFLAGS" -o jtvgen-$ELT_VER-x32.bin jtvgen.go platform_default.go
 GOARCH=amd64 go build "$LDFLAGS" -o jtvgen-$ELT_VER-x64.bin jtvgen.go platform_default.go
 
+GOARCH=386 go build "$LDFLAGS" -o epgx-$ELT_VER-x32.bin epgx.go platform_default.go
+GOARCH=amd64 go build "$LDFLAGS" -o epgx-$ELT_VER-x64.bin epgx.go platform_default.go
+
 # Online guide suggests to do this, but it does not work because
 # of https://github.com/golang/go/issues/11778 and other reasons
 #GOOS=windows GOARCH=386 go install
@@ -47,3 +50,5 @@ GOOS=windows CGO_ENABLED=1 CXX=i686-w64-mingw32-g++ CC=i686-w64-mingw32-gcc \
  GOARCH=386 go build "$LDFLAGS" -o parser-$ELT_VER.exe parser.go platform_windows.go
 GOOS=windows CGO_ENABLED=1 CXX=i686-w64-mingw32-g++ CC=i686-w64-mingw32-gcc \
  GOARCH=386 go build "$LDFLAGS" -o jtvgen-$ELT_VER.exe jtvgen.go platform_windows.go
+GOOS=windows CGO_ENABLED=1 CXX=i686-w64-mingw32-g++ CC=i686-w64-mingw32-gcc \
+ GOARCH=386 go build "$LDFLAGS" -o epgx-$ELT_VER.exe epgx.go platform_windows.go

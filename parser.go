@@ -612,7 +612,7 @@ root:
 
     _, tInsertErr := ctx.sql6.Exec(idVal, tag)
     if tInsertErr != nil {
-      return errors.New(s("Failed to insert into tags table\n", tInsertErr.Error()))
+      return errors.New(s("Failed to insert into tags table: %s\n", tInsertErr.Error()))
     }
 
     tagMap[tag].IdVal = int64(idVal)
