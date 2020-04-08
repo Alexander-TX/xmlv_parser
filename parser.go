@@ -35,6 +35,7 @@ type Channel struct {
 
 type Programm struct {
  Start                 string             `xml:"start,attr"`
+ End                   string             `xml:"stop,attr"`
  Channel               string             `xml:"channel,attr"`
  Title                 string             `xml:"title"`
  Description           string             `xml:"desc"`
@@ -57,12 +58,18 @@ type TagMeta struct {
   IdVal                int64
 }
 
+type EndMeta struct {
+  StartTime            int64
+  EndTime              string
+}
+
 type RequestContext struct {
   sql1, sql2, sql3, sql4, sql5, sql6, sql7 *sql.Stmt
   db *sql.DB
   stringMap map[string]int64
   uriMap map[string]int64
   tagMap map[string]*TagMeta
+  endMap map[string]*EndMeta
   uriIdMax, textIdMax int64
 }
 
@@ -87,6 +94,7 @@ var imageBaseUrl *url.URL
 var eltDateFormat string
 var useLegacyFormat bool
 var startServer bool
+var fakeEnd *string
 
 var ageRegexp *regexp.Regexp
 var timeRegexp1 *regexp.Regexp
@@ -135,6 +143,7 @@ func main() {
   includeCh := flag.String("include", "", "Optional: comma-separated list of channels to include in generated EPG.")
   excludeCh := flag.String("exclude", "", "Optional: comma-separated list of channels to exclude from generated EPG.")
   flag.BoolVar(&startServer, "start-server", false, "Start web server, listening on :9448")
+  fakeEnd = flag.String("add-last-entry", "Конец передачи", "text of fake entry, denoting end of program. Empty string to disable")
   imageBase := flag.String("rewrite-url", "", "Optional: replace base URL of EPG images with specified")
   showVersion := flag.Bool("version", false, "Write version information to standard output")
   flag.Parse()
@@ -361,6 +370,7 @@ func main() {
   ctx.stringMap = make(map[string]int64)
   ctx.uriMap = make(map[string]int64)
   ctx.tagMap = make(map[string]*TagMeta)
+  ctx.endMap = make(map[string]*EndMeta)
 
   ctx.textIdMax = 1
   ctx.uriIdMax = 1
@@ -579,6 +589,26 @@ root:
     }
 
     return errors.New(s("%s\n", emptyErrStr))
+  }
+
+  if *fakeEnd != "" {
+    emptyStrId := ctx.stringMap[*fakeEnd]
+
+    if emptyStrId == 0 {
+      r, _ := bulkTx.Exec("INSERT INTO text (text) VALUES (?);", *fakeEnd)
+      emptyStrId, _ = r.LastInsertId()
+    }
+
+    fakeInsert, _ := bulkTx.Prepare(fmt.Sprintf("INSERT INTO search_meta (start_time, ch_id, title_id, description_id, tags) VALUES (?, ?, %d, %d, 0);", emptyStrId, emptyStrId))
+
+    for chI, chEnd := range ctx.endMap {
+      endDate, endDateErr := parseXmltvDate(chEnd.EndTime)
+      if endDateErr != nil {
+        continue
+      }
+
+      fakeInsert.Exec(endDate.Unix(), chI)
+    }
   }
 
   tagList := make([]string, 0, len(tagMap))
@@ -874,6 +904,15 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
     return false, nil
   }
 
+  lastEnd := ctx.endMap[chId]
+
+  if lastEnd == nil || lastEnd.StartTime < startTime.Unix() {
+    ctx.endMap[chId] = &EndMeta{
+      StartTime: startTime.Unix(),
+      EndTime: programme.End,
+    }
+  }
+
   progTitle := programme.Title
   if (progTitle != "" && !strings.HasSuffix(progTitle, "(18+)")) {
     // a lot of slots has extraneous suffixes like '(6+)'
@@ -1137,6 +1176,7 @@ func HomeRouterHandler(w http.ResponseWriter, r *http.Request) {
   ctx.stringMap = make(map[string]int64)
   ctx.uriMap = make(map[string]int64)
   ctx.tagMap = make(map[string]*TagMeta)
+  ctx.endMap = make(map[string]*EndMeta)
 
   ctx.textIdMax = 1
   ctx.uriIdMax = 1
