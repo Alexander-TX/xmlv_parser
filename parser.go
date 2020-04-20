@@ -51,6 +51,7 @@ type ChannelMeta struct {
   Id                   string
   ArchiveMinutes       int
   ImageUrlOverride     string
+  ChannelPage          string
 }
 
 type TagMeta struct {
@@ -290,6 +291,7 @@ func main() {
         mapId := sepIdx[1]
         minutes := 0
         chImage := ""
+        chPage := ""
 
         if len(sepIdx) > 2 {
           minutes, _ = strconv.Atoi(sepIdx[2])
@@ -299,10 +301,15 @@ func main() {
           chImage = sepIdx[3]
         }
 
+        if len(sepIdx) > 4 {
+          chPage = sepIdx[4]
+        }
+
         idMap[mapId] = ChannelMeta{
           Id: mapNam,
           ArchiveMinutes: minutes,
           ImageUrlOverride: chImage,
+          ChannelPage: chPage,
         }
       }
 
@@ -361,7 +368,7 @@ func main() {
   gzipBufWriter := bufio.NewWriter(gzTmpFile)
   gzipWriter, _ := gzip.NewWriterLevel(gzipBufWriter, gzip.BestCompression)
   gzipWriter.Name = "epg.sqlite"
-  gzipWriter.Comment = "eltex epg v1"
+  gzipWriter.Comment = "eltex epg v2"
 
   ctx := RequestContext{}
 
@@ -428,7 +435,7 @@ func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader, dbFile io.
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
-  _, err = db.Exec(s("CREATE TABLE %s.channels (_id INTEGER PRIMARY KEY, image_uri TEXT, ch_id NOT NULL UNIQUE, name TEXT, archive_time INTEGER NOT NULL);", dbNam))
+  _, err = db.Exec(s("CREATE TABLE %s.channels (_id INTEGER PRIMARY KEY, image_uri TEXT, ch_id NOT NULL UNIQUE, name TEXT, archive_time INTEGER NOT NULL, ch_page TEXT);", dbNam))
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
@@ -482,7 +489,7 @@ func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader, dbFile io.
   if err != nil {
     return errors.New(s("Prepare() failed: %s\n", err.Error()))
   }
-  ctx.sql5, err = bulkTx.Prepare("INSERT INTO channels (ch_id, image_uri, name, archive_time) VALUES (?, ?, ?, ?);")
+  ctx.sql5, err = bulkTx.Prepare("INSERT INTO channels (ch_id, image_uri, name, archive_time, ch_page) VALUES (?, ?, ?, ?, ?);")
   if err != nil {
     return errors.New(s("Prepare() failed: %s\n", err.Error()))
   }
@@ -820,6 +827,8 @@ func addChannel(ctx *RequestContext, decoder *xml.Decoder, channel *Channel, xml
   chId := channel.Id
   archived := 0
 
+  var channelPage sql.NullString
+
   if mappedId, ok := idMap[chId]; ok {
     chId = mappedId.Id
     archived = mappedId.ArchiveMinutes
@@ -827,6 +836,13 @@ func addChannel(ctx *RequestContext, decoder *xml.Decoder, channel *Channel, xml
     if mappedId.ImageUrlOverride != "" {
       imageUri = sql.NullString{
         String: mappedId.ImageUrlOverride,
+        Valid: true,
+      }
+    }
+
+    if mappedId.ChannelPage != "" {
+      channelPage = sql.NullString{
+        String: mappedId.ChannelPage,
         Valid: true,
       }
     }
@@ -851,7 +867,7 @@ func addChannel(ctx *RequestContext, decoder *xml.Decoder, channel *Channel, xml
 
   //fmt.Printf("Inserting %s, %s %s %d\n", chId, imageUri.String, channel.Name, archived)
 
-  _, chInsertErr := ctx.sql5.Exec(chId, imageUri, strings.ToLower(channel.Name), archived)
+  _, chInsertErr := ctx.sql5.Exec(chId, imageUri, strings.ToLower(channel.Name), archived, channelPage)
   if chInsertErr != nil {
     return false, errors.New(s("Failed to insert into channels table\n", chInsertErr.Error()))
   }
