@@ -8,6 +8,7 @@ import (
     "flag"
     "time"
     "bufio"
+    "bytes"
     "errors"
     "regexp"
     "strconv"
@@ -21,6 +22,7 @@ import (
     "encoding/xml"
     "path/filepath"
     "compress/gzip"
+    "text/template"
     "mime/multipart"
     "golang.org/x/net/html/charset"
 )
@@ -39,6 +41,7 @@ type Programm struct {
  Channel               string             `xml:"channel,attr"`
  Title                 string             `xml:"title"`
  Description           string             `xml:"desc"`
+ SubTitle              string             `xml:"sub-title"`
  Images                []ImageUri         `xml:"icon"`
  Categories            []string           `xml:"category"`
 }
@@ -96,6 +99,8 @@ var eltDateFormat string
 var useLegacyFormat bool
 var startServer bool
 var fakeEnd *string
+var titleTemplate *string
+var compiledTemplate *template.Template
 
 var ageRegexp *regexp.Regexp
 var timeRegexp1 *regexp.Regexp
@@ -145,6 +150,7 @@ func main() {
   excludeCh := flag.String("exclude", "", "Optional: comma-separated list of channels to exclude from generated EPG.")
   flag.BoolVar(&startServer, "start-server", false, "Start web server, listening on :9448")
   fakeEnd = flag.String("add-last-entry", "Конец передачи", "text of fake entry, denoting end of program. Empty string to disable")
+  titleTemplate := flag.String("title-template", "{{.Title}}", "Supported variables: .Title, .SubTitle, .Description")
   imageBase := flag.String("rewrite-url", "", "Optional: replace base URL of EPG images with specified")
   showVersion := flag.Bool("version", false, "Write version information to standard output")
   flag.Parse()
@@ -188,6 +194,18 @@ func main() {
     startFrom, startFromErr = time.ParseInLocation(eltDateFormat, *timeStart, localLocation)
     if (startFromErr != nil) {
       Bail("Failed to parse start time:\n %s\n", startFromErr.Error())
+    }
+  }
+
+  if titleTemplate != nil {
+    compiledTemplate = template.New("title")
+    compiledTemplate.Option("missingkey=error")
+
+    var templateErr error
+
+    compiledTemplate, templateErr = compiledTemplate.Parse(*titleTemplate)
+    if templateErr != nil {
+      Bail("Failed to parse title template:\n %s\n", templateErr.Error())
     }
   }
 
@@ -936,6 +954,15 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
     pureText := ageRegexp.FindStringSubmatch(progTitle)
     if (len(pureText) > 1) {
       progTitle = strings.TrimSpace(pureText[1])
+    }
+  }
+
+  if compiledTemplate != nil {
+    var buff bytes.Buffer
+
+    tmplErr := compiledTemplate.Execute(&buff, programme)
+    if tmplErr == nil {
+      progTitle = buff.String()
     }
   }
 
