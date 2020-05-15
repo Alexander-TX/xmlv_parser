@@ -21,7 +21,7 @@ import (
     _ "golang.org/x/text/encoding/charmap"
 )
 
-import _ "gitlab.eltex.loc/aleksandr.rvachev/go-sqlite3.git"
+import _ "github.com/Alexander-TX/go-sqlite3"
 
 var EltexPackageVersion = "unknown"
 var EltexBuilder = "unknown builder"

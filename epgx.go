@@ -16,7 +16,7 @@ import (
     "compress/gzip"
 )
 
-import _ "gitlab.eltex.loc/aleksandr.rvachev/go-sqlite3.git"
+import _ "github.com/Alexander-TX/go-sqlite3"
 
 var db *sql.DB
 
