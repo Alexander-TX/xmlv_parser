@@ -19,7 +19,7 @@ export GIT_SSL_NO_VERIFY=1
 go get "golang.org/x/text/encoding"
 go get "golang.org/x/text/encoding/charmap"
 go get "golang.org/x/net/html/charset"
-go get --insecure "gitlab.eltex.loc/aleksandr.rvachev/go-sqlite3.git"
+go get --insecure "github.com/Alexander-TX/go-sqlite3"
 
 # required by sqlite
 export CGO_ENABLED=1

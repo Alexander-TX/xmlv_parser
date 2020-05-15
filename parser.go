@@ -27,7 +27,7 @@ import (
     "golang.org/x/net/html/charset"
 )
 
-import _ "gitlab.eltex.loc/aleksandr.rvachev/go-sqlite3.git"
+import _ "github.com/Alexander-TX/go-sqlite3"
 
 type Channel struct {
  Name                  string             `xml:"display-name"`
