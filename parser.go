@@ -993,6 +993,7 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
 
     if useLegacyFormat {
       progTitle = strings.ToLower(progTitle)
+      progTitle = strings.ReplaceAll(progTitle, "ё", "е")
     }
 
     _, ftsTitleErr := ctx.sql2.Exec(titleId, progTitle)
@@ -1021,6 +1022,7 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
 
     if useLegacyFormat {
       progDescription = strings.ToLower(progDescription)
+      progDescription = strings.ReplaceAll(progDescription, "ё", "е")
     }
     _, ftsErr := ctx.sql2.Exec(descrId, progDescription)
     if (ftsErr != nil) {
