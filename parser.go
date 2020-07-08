@@ -473,6 +473,10 @@ func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader, dbFile io.
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
+  _, uniqIdxErr := db.Exec(s("CREATE UNIQUE INDEX %s.unique_start_time ON search_meta (ch_id, start_time);", dbNam))
+  if uniqIdxErr != nil {
+    return errors.New(s("index creation failed\n %s\n", uniqIdxErr.Error()))
+  }
   _, err = db.Exec(s("CREATE TABLE %s.uri (_id INTEGER PRIMARY KEY, uri TEXT)", dbNam))
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
@@ -755,6 +759,11 @@ root:
   _, err = caTx.Exec("DROP TABLE eltex_temp_search_tags")
   if err != nil {
     Bail("Failed to delete aux table: %s\n", err.Error())
+  }
+
+  _, err = caTx.Exec("DROP INDEX unique_start_time")
+  if err != nil {
+    Bail("Failed to drop aux index: %s\n", err.Error())
   }
 
   caTxCommitErr := caTx.Commit()
@@ -1116,6 +1125,8 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
 
   metaRes, metaErr := ctx.sql1.Exec(startTime.Unix(), chId, imageDbId, titleId, descrId, 0)
   if (metaErr != nil) {
+    fmt.Printf("When parsing %s\n", programme.Title)
+
     return false, errors.New(s("Meta INSERT failed\n %s\n", metaErr.Error()))
   }
 
