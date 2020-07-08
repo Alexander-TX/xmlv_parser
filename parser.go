@@ -1123,7 +1123,7 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
 
   _, tagsErr := ctx.sql7.Exec(insertId, catsColumn)
   if tagsErr != nil {
-    return false, errors.New(s("Meta INSERT failed\n %s\n", tagsErr.Error()))
+    return false, errors.New(s("Tag INSERT failed\n %s\n", tagsErr.Error()))
   }
 
   return true, nil
