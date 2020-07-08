@@ -177,6 +177,38 @@ func main() {
 
   //////////////////////////////////////////////
 
+  fmt.Printf("Looking for duplicates... ")
+
+  dupes, dupeErr := db.Query("SELECT ch_id, start_time, COUNT(*) occurence FROM search_meta GROUP BY ch_id, start_time HAVING COUNT(*) > 1")
+  if dupeErr != nil {
+    Bail("Failed to check for dupes in search_meta:\n %s\n", dupeErr.Error())
+  }
+
+  var dupeChId string
+  var dupeStartTime int64
+  var dupeCount int64
+
+  for {
+    if !dupes.Next() {
+      break
+    }
+
+    err = dupes.Scan(&dupeChId, &dupeStartTime, &dupeCount)
+    if err != nil {
+      Bail("SQLite error: %s\n", err.Error())
+    }
+
+    fmt.Printf("Channel %s has %d items with same start time (%s)\n", dupeChId, dupeCount, time.Unix(dupeStartTime, 0).String())
+  }
+
+  if dupeChId != "" {
+    Bail("\nSome channels have items with duplicate start time, bailing\n")
+  } else {
+    fmt.Printf("ok\n")
+  }
+
+  //////////////////////////////////////////////
+
   fmt.Printf("Checking integrity of string table... ")
 
   var haveTitle int64
