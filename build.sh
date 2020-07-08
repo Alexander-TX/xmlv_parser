@@ -2,11 +2,13 @@
 
 export LANG=C
 
-wget -N 'https://dl.google.com/go/go1.14.linux-amd64.tar.gz'
+ELT_GO_VERSION=1.14.4
+
+wget -N "https://dl.google.com/go/go${ELT_GO_VERSION}.linux-amd64.tar.gz"
 
 rm -rf go
 
-tar xf 'go1.14.linux-amd64.tar.gz'
+tar xf "go${ELT_GO_VERSION}.linux-amd64.tar.gz"
 
 mkdir -p bin src
 
