@@ -44,6 +44,7 @@ type Programm struct {
  SubTitle              string             `xml:"sub-title"`
  Images                []ImageUri         `xml:"icon"`
  Categories            []string           `xml:"category"`
+ Year                  string             `xml:"year"`
 }
 
 type ImageUri struct {
@@ -104,6 +105,7 @@ var compiledTemplate *template.Template
 
 var ageRegexp *regexp.Regexp
 var timeRegexp1 *regexp.Regexp
+var yearRegexp1 *regexp.Regexp
 
 var mappedTotal = 0
 var trimmedTotal = 0
@@ -211,6 +213,7 @@ func main() {
 
   ageRegexp = regexp.MustCompile("(.+)\\([0-9]{1,2}\\+\\)$")
   timeRegexp1 = regexp.MustCompile("([0-9]{14})( (?:.+))?$")
+  yearRegexp1 = regexp.MustCompile("([0-9]{4})$")
 
   if startServer {
     bootstrapServer()
@@ -469,7 +472,7 @@ func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader, dbFile io.
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
-  _, err = db.Exec(s("CREATE TABLE %s.search_meta (_id INTEGER PRIMARY KEY, ch_id NOT NULL, start_time INTEGER NOT NULL, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL, tags INTEGER NOT NULL, image_uri INTEGER);", dbNam))
+  _, err = db.Exec(s("CREATE TABLE %s.search_meta (_id INTEGER PRIMARY KEY, ch_id NOT NULL, start_time INTEGER NOT NULL, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL, tags INTEGER NOT NULL, year INTEGER, image_uri INTEGER);", dbNam))
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
@@ -495,7 +498,7 @@ func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader, dbFile io.
     return errors.New(s("Could not start transaction\n %s\n", txErr.Error()))
   }
 
-  ctx.sql1, err = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, image_uri, title_id, description_id, tags) VALUES (?, ?, ?, ?, ?, ?);")
+  ctx.sql1, err = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, image_uri, title_id, description_id, year, tags) VALUES (?, ?, ?, ?, ?, ?, ?);")
   if err != nil {
     return errors.New(s("Prepare() failed: %s\n", err.Error()))
   }
@@ -1123,7 +1126,21 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
 
   catsColumn := caStr.String()
 
-  metaRes, metaErr := ctx.sql1.Exec(startTime.Unix(), chId, imageDbId, titleId, descrId, 0)
+  var progYear sql.NullInt64
+
+  if programme.Year != "" {
+    yearMatch := yearRegexp1.FindStringSubmatch(programme.Year)
+    if yearMatch != nil {
+      parsedYear, _ := strconv.Atoi(yearMatch[1])
+
+      progYear = sql.NullInt64{
+        Int64: int64(parsedYear),
+        Valid: true,
+      }
+    }
+  }
+
+  metaRes, metaErr := ctx.sql1.Exec(startTime.Unix(), chId, imageDbId, titleId, descrId, progYear, 0)
   if (metaErr != nil) {
     fmt.Printf("When parsing %s\n", programme.Title)
 
