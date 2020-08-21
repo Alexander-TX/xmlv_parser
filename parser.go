@@ -107,6 +107,9 @@ var ageRegexp *regexp.Regexp
 var timeRegexp1 *regexp.Regexp
 var yearRegexp1 *regexp.Regexp
 
+var excludeYear bool
+var excludeTags bool
+
 var mappedTotal = 0
 var trimmedTotal = 0
 var snippetLengthMax = 0
@@ -155,7 +158,27 @@ func main() {
   titleTemplate := flag.String("title-template", "{{.Title}}", "Supported variables: .Title, .SubTitle, .Description")
   imageBase := flag.String("rewrite-url", "", "Optional: replace base URL of EPG images with specified")
   showVersion := flag.Bool("version", false, "Write version information to standard output")
+  omitYear := flag.Bool("exclude-year", true, "Exclude optional year data from generated EPG (default false)")
+  omitTags := flag.Bool("exclude-tags", true, "Exclude optional tags data from generated EPG (default false)")
   flag.Parse()
+
+  seen := make(map[string]bool)
+
+  flag.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+
+  if !seen["exclude-year"] {
+    excludeYear = false
+  } else {
+    excludeYear = *omitYear
+  }
+
+  if !seen["exclude-tags"] {
+    excludeTags = false
+  } else {
+    excludeTags = *omitTags
+  }
+
+  fmt.Printf(" exclude year = %t\n exclude tags = %t\n", excludeYear, excludeTags)
 
   if *showVersion {
     fmt.Printf("%s\n", EltexPackageVersion)
@@ -231,10 +254,6 @@ func main() {
       Bail("Invalid base url specified:\n %s\n", urlErr.Error())
     }
   }
-
-  seen := make(map[string]bool)
-
-  flag.Visit(func(f *flag.Flag) { seen[f.Name] = true })
 
   if !seen["offset"] {
     fmt.Fprintf(os.Stderr, "Warning: missing --offset argument, EPG start defaults to 1 January 1970\n")
@@ -441,6 +460,20 @@ func s(format string, a ...interface{}) string {
   return fmt.Sprintf(format, a...)
 }
 
+func addOptionalCols() string {
+  var b strings.Builder
+
+  if (!excludeTags) {
+    b.WriteString("tags INTEGER, ")
+  }
+
+  if (!excludeYear) {
+    b.WriteString("year INTEGER, ")
+  }
+
+  return b.String()
+}
+
 func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader, dbFile io.Reader, destWriter io.Writer) error {
   db := ctx.db
 
@@ -472,11 +505,11 @@ func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader, dbFile io.
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
-  _, err = db.Exec(s("CREATE TABLE %s.search_meta (_id INTEGER PRIMARY KEY, ch_id NOT NULL, start_time INTEGER NOT NULL, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL, tags INTEGER NOT NULL, year INTEGER, image_uri INTEGER);", dbNam))
+  _, err = db.Exec(s("CREATE TABLE %s.search_meta_0 (_id INTEGER PRIMARY KEY, ch_id NOT NULL, start_time INTEGER NOT NULL, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL, tags INTEGER NOT NULL, year INTEGER, image_uri INTEGER);", dbNam))
   if err != nil {
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
-  _, uniqIdxErr := db.Exec(s("CREATE UNIQUE INDEX %s.unique_start_time ON search_meta (ch_id, start_time);", dbNam))
+  _, uniqIdxErr := db.Exec(s("CREATE UNIQUE INDEX %s.unique_start_time ON search_meta_0 (ch_id, start_time);", dbNam))
   if uniqIdxErr != nil {
     return errors.New(s("index creation failed\n %s\n", uniqIdxErr.Error()))
   }
@@ -498,7 +531,7 @@ func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader, dbFile io.
     return errors.New(s("Could not start transaction\n %s\n", txErr.Error()))
   }
 
-  ctx.sql1, err = bulkTx.Prepare("INSERT INTO search_meta (start_time, ch_id, image_uri, title_id, description_id, year, tags) VALUES (?, ?, ?, ?, ?, ?, ?);")
+  ctx.sql1, err = bulkTx.Prepare("INSERT INTO search_meta_0 (start_time, ch_id, image_uri, title_id, description_id, year, tags) VALUES (?, ?, ?, ?, ?, ?, ?);")
   if err != nil {
     return errors.New(s("Prepare() failed: %s\n", err.Error()))
   }
@@ -631,7 +664,7 @@ root:
       emptyStrId, _ = r.LastInsertId()
     }
 
-    fakeInsert, _ := bulkTx.Prepare(fmt.Sprintf("INSERT INTO search_meta (start_time, ch_id, title_id, description_id, tags) VALUES (?, ?, %d, %d, 0);", emptyStrId, emptyStrId))
+    fakeInsert, _ := bulkTx.Prepare(fmt.Sprintf("INSERT INTO search_meta_0 (start_time, ch_id, title_id, description_id, tags) VALUES (?, ?, %d, %d, 0);", emptyStrId, emptyStrId))
 
     for chI, chEnd := range ctx.endMap {
       endDate, endDateErr := parseXmltvDate(chEnd.EndTime)
@@ -748,7 +781,7 @@ root:
     return errors.New(s("Could not start transaction\n %s\n", caTxErr.Error()))
   }
 
-  updateSql, prepErr := caTx.Prepare("UPDATE search_meta SET tags = ? WHERE _id = ?;")
+  updateSql, prepErr := caTx.Prepare("UPDATE search_meta_0 SET tags = ? WHERE _id = ?;")
   if prepErr != nil {
     return errors.New(s("Prepare() failed: %s\n", err.Error()))
   }
@@ -767,6 +800,39 @@ root:
   _, err = caTx.Exec("DROP INDEX unique_start_time")
   if err != nil {
     Bail("Failed to drop aux index: %s\n", err.Error())
+  }
+
+  _, err = caTx.Exec("CREATE TABLE search_meta (_id INTEGER PRIMARY KEY, ch_id NOT NULL, start_time INTEGER NOT NULL, title_id INTEGER NOT NULL, description_id INTEGER NOT NULL, " + addOptionalCols() + "image_uri INTEGER);")
+  if err != nil {
+    Bail("Failed to create dest table: %s\n", err.Error())
+  }
+
+  var copyBuilder strings.Builder
+
+  copyBuilder.WriteString("INSERT INTO search_meta SELECT _id, ch_id, start_time, title_id, description_id")
+  if (!excludeTags) {
+    copyBuilder.WriteString(", tags")
+  }
+  if (!excludeYear) {
+    copyBuilder.WriteString(", year")
+  }
+  copyBuilder.WriteString(", image_uri FROM search_meta_0")
+
+  _, err = caTx.Exec(copyBuilder.String())
+  if err != nil {
+    Bail("Failed to copy search_meta: %s\n", err.Error())
+  }
+
+  _, err = caTx.Exec("DROP TABLE search_meta_0")
+  if err != nil {
+    Bail("Failed to drop scratch table: %s\n", err.Error())
+  }
+
+  if (excludeTags) {
+    _, err = caTx.Exec("DROP TABLE tags")
+    if err != nil {
+      Bail("Failed to drop tags table: %s\n", err.Error())
+    }
   }
 
   caTxCommitErr := caTx.Commit()
@@ -794,9 +860,11 @@ root:
     return errors.New(s("index creation failed\n %s\n", indexErr3.Error()))
   }
 
-  _, indexErr4 := db.Exec(s("CREATE INDEX %s.idx_tags ON search_meta(tags);", dbNam))
-  if indexErr4 != nil {
-    return errors.New(s("index creation failed\n %s\n", indexErr4.Error()))
+  if !excludeTags {
+    _, indexErr4 := db.Exec(s("CREATE INDEX %s.idx_tags ON search_meta(tags);", dbNam))
+    if indexErr4 != nil {
+      return errors.New(s("index creation failed\n %s\n", indexErr4.Error()))
+    }
   }
 
   _, optimizeErr := db.Exec(s("INSERT INTO %s.fts_search(fts_search) VALUES('optimize');", dbNam))
