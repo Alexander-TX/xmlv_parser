@@ -293,6 +293,21 @@ func main() {
 
   //////////////////////////////////////////////
 
+  fmt.Printf("Checking integrity of year column... ")
+
+  var haveBadYear int64
+  badYear := db.QueryRow("SELECT COUNT(*) FROM search_meta WHERE CAST(CAST(year AS INTEGER) AS TEXT) != year;")
+  err = badYear.Scan(&haveBadYear)
+  if err != nil {
+    fmt.Printf("ok (no years)\n")
+  } else if (haveBadYear != 0) {
+    Bail("Some of entries have invalid year values\n")
+  } else {
+    fmt.Printf("ok\n")
+  }
+
+  //////////////////////////////////////////////
+
   fmt.Printf("Checking integrity of tags table... ")
 
   tagTableTest := db.QueryRow("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tags';")
