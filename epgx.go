@@ -209,6 +209,26 @@ func main() {
 
   //////////////////////////////////////////////
 
+  fmt.Printf("Checking mandatory columns... ")
+
+  colsReq, colsErr := db.Query("SELECT _id, ch_id, start_time, title_id, description_id, image_uri FROM search_meta LIMIT 0;")
+  if colsErr != nil {
+    Bail("Failed to check for mandatory columns in search_meta:\n %s\n", colsErr.Error())
+  }
+
+  colsReq.Close()
+
+  chColsReq, chColsErr := db.Query("SELECT _id, ch_id, name, image_uri, archive_time FROM channels LIMIT 0;")
+  if chColsErr != nil {
+    Bail("Failed to check for mandatory columns in channels:\n %s\n", chColsErr.Error())
+  }
+
+  chColsReq.Close()
+
+  fmt.Printf("ok\n")
+
+  //////////////////////////////////////////////
+
   fmt.Printf("Checking integrity of string table... ")
 
   var haveTitle int64
