@@ -158,9 +158,17 @@ func main() {
   titleTemplate := flag.String("title-template", "{{.Title}}", "Supported variables: .Title, .SubTitle, .Description")
   imageBase := flag.String("rewrite-url", "", "Optional: replace base URL of EPG images with specified")
   showVersion := flag.Bool("version", false, "Write version information to standard output")
-  omitYear := flag.Bool("exclude-year", true, "Exclude optional year data from generated EPG (default false)")
-  omitTags := flag.Bool("exclude-tags", true, "Exclude optional tags data from generated EPG (default false)")
+  omitYear := flag.Bool("exclude-year", false, "Exclude optional year data from generated EPG")
+  omitTags := flag.Bool("exclude-tags", false, "Exclude optional tags data from generated EPG")
   flag.Parse()
+
+  if flag.NArg() != 0 {
+    fmt.Printf("Unrecognized argument: %s. This application does not take such arguments\n\n", flag.Arg(0))
+    fmt.Printf("Hint: boolean flags and their values must be separated by '=' sign. Example: --boolean-flag=true\n\n")
+    fmt.Printf("Usage:\n")
+    flag.PrintDefaults()
+    os.Exit(2)
+  }
 
   seen := make(map[string]bool)
 
