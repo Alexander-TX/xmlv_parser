@@ -911,6 +911,54 @@ func parseXmltvDate(source string) (time.Time, error) {
   }
 }
 
+func isReadyForFts(c rune) (bool) {
+  // from https://www.sqlite.org/fts3.html
+  //
+  // A term is a contiguous sequence of eligible characters, where eligible characters are
+  // all alphanumeric characters and all characters with Unicode codepoint values greater
+  // than or equal to 128. All other characters are discarded
+
+  if (c >= 'a' && c <= 'z') {
+    return true;
+  }
+
+  if (c >= '0' && c <= '9') {
+    return true;
+  }
+
+  return c >= 128;
+}
+
+func preprocess(name string) (string) {
+  // replace punctuation and special characters with spaces
+  // and trim all resulting excess space from string
+
+  var builder strings.Builder
+
+  lastIsSpace := false
+
+  for _, c := range name {
+    if (c >= 'A' && c <= 'Z') {
+      c = c + ('a' - 'A');
+    } else if (c >= 'А' && c <= 'Я') {
+      // not necessary for FTS, just normalization for caller
+      c = c + ('я' - 'Я');
+    } else if (!isReadyForFts(c)) {
+      c = ' ';
+    }
+
+    if c == ' ' && lastIsSpace {
+      continue
+    }
+
+    lastIsSpace = c == ' '
+
+    builder.WriteRune(c);
+  }
+
+  return strings.TrimSpace(builder.String())
+}
+
 func addChannel(ctx *RequestContext, decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartElement) (bool, error) {
   decErr := decoder.DecodeElement(channel, xmlElement)
   if (decErr != nil) {
@@ -973,7 +1021,7 @@ func addChannel(ctx *RequestContext, decoder *xml.Decoder, channel *Channel, xml
 
   //fmt.Printf("Inserting %s, %s %s %d\n", chId, imageUri.String, channel.Name, archived)
 
-  _, chInsertErr := ctx.sql5.Exec(chId, imageUri, strings.ToLower(channel.Name), archived, channelPage)
+  _, chInsertErr := ctx.sql5.Exec(chId, imageUri, preprocess(channel.Name), archived, channelPage)
   if chInsertErr != nil {
     return false, errors.New(s("Failed to insert into channels table\n", chInsertErr.Error()))
   }
