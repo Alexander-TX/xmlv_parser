@@ -186,7 +186,7 @@ func main() {
     excludeTags = *omitTags
   }
 
-  fmt.Printf(" exclude year = %t\n exclude tags = %t\n", excludeYear, excludeTags)
+  //fmt.Printf(" exclude year = %t\n exclude tags = %t\n", excludeYear, excludeTags)
 
   if *showVersion {
     fmt.Printf("%s\n", EltexPackageVersion)
@@ -503,7 +503,7 @@ func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader, dbFile io.
   }
 
   if useLegacyFormat {
-    fmt.Fprintf(os.Stderr, "Using legacy format: tokenize=porter\n")
+    //fmt.Fprintf(os.Stderr, "Using legacy format: tokenize=porter\n")
 
     _, err = db.Exec(s("CREATE VIRTUAL TABLE %s.fts_search USING fts4(content='', matchinfo='fts3', prefix='3', text, tokenize=porter);", dbNam))
   } else {
