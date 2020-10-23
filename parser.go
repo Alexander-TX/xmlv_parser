@@ -53,7 +53,7 @@ type ImageUri struct {
 
 type ChannelMeta struct {
   Id                   string
-  ArchiveMinutes       int
+  ArchiveHours         int
   ImageUrlOverride     string
   ChannelPage          string
 }
@@ -337,12 +337,12 @@ func main() {
 
         mapNam := sepIdx[0]
         mapId := sepIdx[1]
-        minutes := 0
+        hours := 0
         chImage := ""
         chPage := ""
 
         if len(sepIdx) > 2 {
-          minutes, _ = strconv.Atoi(sepIdx[2])
+          hours, _ = strconv.Atoi(sepIdx[2])
         }
 
         if len(sepIdx) > 3 {
@@ -355,7 +355,7 @@ func main() {
 
         idMap[mapId] = ChannelMeta{
           Id: mapNam,
-          ArchiveMinutes: minutes,
+          ArchiveHours: hours,
           ImageUrlOverride: chImage,
           ChannelPage: chPage,
         }
@@ -985,7 +985,7 @@ func addChannel(ctx *RequestContext, decoder *xml.Decoder, channel *Channel, xml
 
   if mappedId, ok := idMap[chId]; ok {
     chId = mappedId.Id
-    archived = mappedId.ArchiveMinutes
+    archived = mappedId.ArchiveHours
 
     if mappedId.ImageUrlOverride != "" {
       imageUri = sql.NullString{
