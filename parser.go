@@ -610,7 +610,7 @@ func addTrack(ctx *RequestContext, decoder *xml.Decoder, track *Track, xmlElemen
 
   processedTitle := preprocess(track.Title)
 
-  var foundChId int64
+  var foundChId string
 
   chIdQuery := q.QueryRow(processedTitle)
 
