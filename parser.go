@@ -68,6 +68,14 @@ type EndMeta struct {
   EndTime              string
 }
 
+type Track struct {
+  PsFile               string             `xml:"psfile"`
+  ArchiveLimit         int                `xml:"archive_limit"`
+  ChannelPage          string             `xml:"subscribe"`
+  Title                string             `xml:"title"`
+  Image                string             `xml:"image"`
+}
+
 type RequestContext struct {
   sql1, sql2, sql3, sql4, sql5, sql6, sql7 *sql.Stmt
   db *sql.DB
@@ -149,6 +157,7 @@ func main() {
   argDuration := flag.Duration("timespan", defDuration, "duration since start date. Example: 72h.")
   flag.IntVar(&snippetLength, "snippet", -1, "description length limit. If negative, descriptions aren't clipped.")
   nameMapFile := flag.String("xmap", "", "Optional: file with pipe-separated ID mappings. (default none)")
+  xspfFile := flag.String("xspf", "", "Optional: playlist with proprietary Eltex extensions (<psfile> and <archive_limit> tags). (default none)")
   xmltvTz := flag.String("tz", "", "Optional: replace timezone in XMLTV file. Example: 'Asia/Novosibirsk'. (default none)")
   flag.BoolVar(&useLegacyFormat, "legacy", true, "Deprecated: this option does nothing")
   includeCh := flag.String("include", "", "Optional: comma-separated list of channels to include in generated EPG.")
@@ -435,6 +444,12 @@ func main() {
     Bail("%s\n", reqErr.Error())
   }
 
+  if (*xspfFile != "") {
+    processXspf(&ctx, *xspfFile)
+  }
+
+  optimizeDatabase(&ctx, "main")
+
   fmt.Printf("Compressing database file\n")
 
   if _, copyErr := io.Copy(gzipWriter, tmpFile); copyErr != nil {
@@ -450,6 +465,173 @@ func main() {
   if (renameErr != nil) {
     Bail("Failed to move temporary file to output\n %s\n", renameErr.Error())
   }
+}
+
+func processXspf(ctx *RequestContext, xspfFilename string) {
+  nameMap, idMapErr := os.Open(xspfFilename)
+  if idMapErr != nil {
+    Bail("Failed to open XSPF file:\n %s\n")
+  }
+
+  lineNum := 0
+  tracksTotal := 0
+
+  decoder := xml.NewDecoder(nameMap)
+  decoder.CharsetReader = charset.NewReaderLabel
+
+  // skip root
+root:
+  for {
+    token, xmlErr := decoder.Token()
+    if xmlErr != nil {
+      Bail("XSPF file is malformed (failed to find root tag)\n")
+    }
+
+    switch xmlRoot := token.(type) {
+      default:
+        continue;
+      case xml.StartElement:
+        if (xmlRoot.Name.Local == "playlist") {
+          break root;
+        } else {
+          Bail(s("malformed XSPF: <playlist> tag not found, got <%s> instead\n", xmlRoot.Name.Local))
+        }
+    }
+  }
+
+  fmt.Printf("Parsing XSPF playlist file\n")
+
+  bulkTx, txErr := ctx.db.Begin()
+  if txErr != nil {
+    Bail(s("Could not start transaction\n %s\n", txErr.Error()))
+  }
+
+  var track *Track
+
+  // iterate over all <track> tags and add them to database
+  for {
+    t, tokenErr := decoder.Token()
+    if tokenErr != nil {
+      if tokenErr == io.EOF {
+        break
+      } else {
+        Bail(s("Failed to read token\n %s\n", tokenErr.Error()))
+      }
+    }
+
+    qSql, _ := bulkTx.Prepare("SELECT ch_id FROM channels WHERE name = ?;")
+
+    updateSql, err := bulkTx.Prepare("UPDATE channels SET archive_time = ?, ch_page = ?, image_uri = ?, ch_id = ? WHERE ch_id = ?;")
+    if err != nil {
+      Bail("Failed to compile UPDATE\n %s\n", err.Error())
+    }
+
+    updateSql2, err := bulkTx.Prepare("UPDATE search_meta SET ch_id = ? WHERE ch_id = ?;")
+    if err != nil {
+      Bail("Failed to compile UPDATE\n %s\n", err.Error())
+    }
+
+    switch startElement := t.(type) {
+      default:
+        continue;
+      case xml.StartElement:
+        //fmt.Printf("Another element: %s\n", startElement.Name.Local)
+
+        if (startElement.Name.Local == "track") {
+          // create a new value each time, or else it will be botched
+          // (old values will be kept for unset JSON fields)
+          track = &Track{}
+
+          added, err := addTrack(ctx, decoder, track, &startElement, qSql, updateSql, updateSql2)
+          if err != nil {
+            Bail("Failed to process <track>\n %s\n", err.Error())
+          }
+
+          tracksTotal += 1
+
+          if added {
+            lineNum += 1;
+          }
+        } else if strings.ToLower(startElement.Name.Local) == "tracklist" {
+          continue;
+        } else {
+          decoder.Skip()
+          continue;
+        }
+        break;
+    }
+  }
+
+  bulkTxError := bulkTx.Commit()
+  if bulkTxError != nil {
+    Bail(s("Failed to commit XSPF update transaction\n %s\n", bulkTxError.Error()))
+  }
+
+  nameMap.Close()
+
+  if lineNum == 0 {
+    Bail("XSPF file has no valid Eltex tags! It is useless!")
+  }
+
+  fmt.Printf("%d out of %d XSPF tracks had useful metadata \n", lineNum, tracksTotal)
+}
+
+func addTrack(ctx *RequestContext, decoder *xml.Decoder, track *Track, xmlElement *xml.StartElement, q *sql.Stmt, updSql *sql.Stmt, updSql2 *sql.Stmt) (bool, error) {
+  decErr := decoder.DecodeElement(track, xmlElement)
+  if (decErr != nil) {
+    return false, errors.New(s("Could not decode element\n %s\n", decErr.Error()))
+  }
+
+  if track.PsFile == "" {
+    //fmt.Fprintf(os.Stderr, "No <psfile>\n")
+    return false, nil
+  }
+
+  if track.ArchiveLimit == 0 && track.ChannelPage == "" && track.Image == "" {
+    //fmt.Fprintf(os.Stderr, "Track has no useful info: %s\n", preprocess(track.Title))
+    return false, nil
+  }
+
+  var chPageUri, chImgUri sql.NullString
+
+  if track.ChannelPage != "" {
+    chPageUri = sql.NullString{
+      String: track.ChannelPage,
+      Valid: true,
+    }
+  }
+
+  if track.Image != "" {
+    chImgUri = sql.NullString{
+      String: track.Image,
+      Valid: true,
+    }
+  }
+
+  processedTitle := preprocess(track.Title)
+
+  var foundChId int64
+
+  chIdQuery := q.QueryRow(processedTitle)
+
+  scanErr := chIdQuery.Scan(&foundChId)
+  if scanErr == sql.ErrNoRows {
+    return false, nil
+  } else if scanErr != nil {
+    return false, scanErr
+  }
+
+  _, updateErr := updSql.Exec(track.ArchiveLimit, chPageUri, chImgUri, track.PsFile, foundChId)
+  if updateErr != nil {
+    return false, updateErr
+  }
+
+  _, updateErr2 := updSql2.Exec(track.PsFile, foundChId)
+  if updateErr2 != nil {
+    return false, updateErr2
+  }
+
+  return true, nil
 }
 
 func bootstrapServer() {
@@ -847,6 +1029,12 @@ root:
   if caTxCommitErr != nil {
     return errors.New(s("Failed to commit tags transaction\n %s\n", caTxCommitErr.Error()))
   }
+
+  return nil
+}
+
+func optimizeDatabase(ctx *RequestContext, dbNam string) error {
+  db := ctx.db
 
   _, timeIdxErr := db.Exec(s("CREATE INDEX %s.time_idx ON search_meta (start_time);", dbNam))
   if timeIdxErr != nil {
@@ -1383,6 +1571,8 @@ func HomeRouterHandler(w http.ResponseWriter, r *http.Request) {
   err = processXml(&ctx, "main", largeBuffer, tmpFile, w)
 
   xmlStreamReader.Close()
+
+  optimizeDatabase(&ctx, "main")
 
   if err != nil {
     fmt.Fprintf(os.Stderr, "Conversion failed: %s\n", err.Error())
