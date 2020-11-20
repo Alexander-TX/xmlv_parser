@@ -28,7 +28,7 @@ export CGO_ENABLED=1
 
 mkdir -p bin src
 
-ELT_VER=1.1.2
+ELT_VER=1.1.3
 VER=$ELT_VER-$(git rev-parse --short HEAD)
 BUILDER="$(whoami)@$(hostname)"
 BUILD_TIME="$(date +'%d %B %Y %H:%M')"
