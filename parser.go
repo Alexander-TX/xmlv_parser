@@ -320,7 +320,7 @@ func main() {
 
     nameMap, idMapErr := os.Open(*nameMapFile)
     if idMapErr != nil {
-      Bail("Failed to open name map file:\n %s\n")
+      Bail("Failed to open name map file:\n %s\n", idMapErr.Error())
     }
 
     mapReader := bufio.NewReader(nameMap)
@@ -375,7 +375,7 @@ func main() {
           break;
         }
 
-        Bail("Received IO error during reading map file:\n %s\n", lineErr)
+        Bail("Received IO error during reading map file:\n %s\n", lineErr.Error())
       }
     }
 
@@ -470,7 +470,7 @@ func main() {
 func processXspf(ctx *RequestContext, xspfFilename string) {
   nameMap, idMapErr := os.Open(xspfFilename)
   if idMapErr != nil {
-    Bail("Failed to open XSPF file:\n %s\n")
+    Bail("Failed to open XSPF file:\n %s\n", idMapErr.Error())
   }
 
   lineNum := 0
@@ -494,7 +494,7 @@ root:
         if (xmlRoot.Name.Local == "playlist") {
           break root;
         } else {
-          Bail(s("malformed XSPF: <playlist> tag not found, got <%s> instead\n", xmlRoot.Name.Local))
+          Bail("malformed XSPF: <playlist> tag not found, got <%s> instead\n", xmlRoot.Name.Local)
         }
     }
   }
@@ -503,7 +503,7 @@ root:
 
   bulkTx, txErr := ctx.db.Begin()
   if txErr != nil {
-    Bail(s("Could not start transaction\n %s\n", txErr.Error()))
+    Bail("Could not start transaction\n %s\n", txErr.Error())
   }
 
   var track *Track
@@ -515,7 +515,7 @@ root:
       if tokenErr == io.EOF {
         break
       } else {
-        Bail(s("Failed to read token\n %s\n", tokenErr.Error()))
+        Bail("Failed to read token\n %s\n", tokenErr.Error())
       }
     }
 
@@ -564,7 +564,7 @@ root:
 
   bulkTxError := bulkTx.Commit()
   if bulkTxError != nil {
-    Bail(s("Failed to commit XSPF update transaction\n %s\n", bulkTxError.Error()))
+    Bail("Failed to commit XSPF update transaction\n %s\n", bulkTxError.Error())
   }
 
   nameMap.Close()
