@@ -121,6 +121,7 @@ var excludeTags bool
 var mappedTotal = 0
 var trimmedTotal = 0
 var snippetLengthMax = 0
+var dvrLength = 0
 
 var channelBlacklist, channelWhitelist map[string]struct{}
 
@@ -169,6 +170,7 @@ func main() {
   showVersion := flag.Bool("version", false, "Write version information to standard output")
   omitYear := flag.Bool("exclude-year", false, "Exclude optional year data from generated EPG")
   omitTags := flag.Bool("exclude-tags", false, "Exclude optional tags data from generated EPG")
+  setArchiveLength := flag.Int("dvr-length", 0, "Set default length of DVR archive, in hours")
   flag.Parse()
 
   if flag.NArg() != 0 {
@@ -201,6 +203,8 @@ func main() {
     fmt.Printf("%s\n", EltexPackageVersion)
     os.Exit(0)
   }
+
+  dvrLength = *setArchiveLength
 
   fmt.Printf("Version %s built by %s on %s\n\n", EltexPackageVersion, EltexBuilder, EltexBuildTime)
 
@@ -918,7 +922,7 @@ root:
     fmt.Printf("WARNING: none of %d mappings were used!\n", len(idMap))
   }
 
-  if archivedChannels == 0 {
+  if archivedChannels == 0 && dvrLength == 0 {
     fmt.Printf("WARNING: none of channels have archive!\n")
   }
 
@@ -1188,6 +1192,10 @@ func addChannel(ctx *RequestContext, decoder *xml.Decoder, channel *Channel, xml
         Valid: true,
       }
     }
+  }
+
+  if archived == 0 {
+    archived = dvrLength
   }
 
   if len(channelWhitelist) != 0 {
