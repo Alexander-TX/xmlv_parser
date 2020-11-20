@@ -8,7 +8,7 @@
 
 Запускаем конвертер в EPGX:
 
-zcat xmltv.xml.gz | ./parser -offset '01-12-2019 09:00' -timespan 9999h -xmap ./map.txt -output schedule.epgx.gz -tz 'Asia/Novosibirsk'
+zcat xmltv.xml.gz | ./parser -offset '01-12-2019 09:00' -timespan 9999h -dvr-length=192 -output schedule.epgx.gz -tz 'Asia/Novosibirsk'
 
 При необходимости, конвертируем полученный файл в JTV:
 
