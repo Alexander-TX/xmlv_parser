@@ -84,6 +84,7 @@ type RequestContext struct {
   tagMap map[string]*TagMeta
   endMap map[string]*EndMeta
   uriIdMax, textIdMax int64
+  appendedElements, appendedChannels int
 }
 
 var EltexPackageVersion = "unknown"
@@ -153,7 +154,7 @@ func main() {
   defDuration, _ := time.ParseDuration("72h")
 
   dbPath := flag.String("output", "schedule.epgx.gz", "database file.")
-  xmlPath := flag.String("input", "", "XMLTV file. (default read from standard input)")
+  xmlPath := flag.String("input", "", "Paths to one or more XMLTV file(s), comma-separated. (default read from standard input)")
   timeStart := flag.String("offset", "01-01-1970 00:00", "start import from specified date. Example: 29-12-2009 16:40.")
   argDuration := flag.Duration("timespan", defDuration, "duration since start date. Example: 72h.")
   flag.IntVar(&snippetLength, "snippet", -1, "description length limit. If negative, descriptions aren't clipped.")
@@ -404,18 +405,34 @@ func main() {
     Bail("sqlite error\n %s\n", dbErr.Error())
   }
 
-  var xmlFile io.Reader
+  var xmlFile []io.Reader
 
   if (*xmlPath == "") {
     fmt.Printf("No -input argument, reading from standard input...\n");
 
-    xmlFile = bufio.NewReader(os.Stdin)
+    xmlFile = make([]io.Reader, 1)
+
+    xmlFile[0] = bufio.NewReader(os.Stdin)
   } else {
     var inputErr error
 
-    xmlFile, inputErr = os.Open(*xmlPath)
-    if inputErr != nil {
-      Bail("Could not open XMLTV file\n %s\n", inputErr.Error())
+    inputList := strings.FieldsFunc(*xmlPath, func(c rune) bool {
+      return c == ','
+    })
+
+    xmlFile = make([]io.Reader, len(inputList))
+
+    for pos, path := range inputList {
+      if path == "" {
+        continue
+      }
+
+      fmt.Printf("Opening %s\n", path)
+
+      xmlFile[pos], inputErr = os.Open(path)
+      if inputErr != nil {
+        Bail("Could not open XMLTV file\n %s\n", inputErr.Error())
+      }
     }
   }
 
@@ -443,9 +460,21 @@ func main() {
   ctx.textIdMax = 1
   ctx.uriIdMax = 1
 
-  reqErr := processXml(&ctx, "main", xmlFile, tmpFile, gzipWriter)
-  if reqErr != nil {
-    Bail("%s\n", reqErr.Error())
+  initErr := initDb(&ctx, "main")
+  if initErr != nil {
+    Bail("%s\n", initErr.Error())
+  }
+
+  for _, xml := range xmlFile {
+    reqErr := processXml(&ctx, "main", xml)
+    if reqErr != nil {
+      Bail("%s\n", reqErr.Error())
+    }
+  }
+
+  finishErr := finishDb(&ctx, "main")
+  if finishErr != nil {
+    Bail("%s\n", finishErr.Error())
   }
 
   if (*xspfFile != "") {
@@ -469,6 +498,8 @@ func main() {
   if (renameErr != nil) {
     Bail("Failed to move temporary file to output\n %s\n", renameErr.Error())
   }
+
+  fmt.Printf("EPG was successfully written to %s\n", *dbPath)
 }
 
 func processXspf(ctx *RequestContext, xspfFilename string) {
@@ -668,7 +699,7 @@ func addOptionalCols() string {
   return b.String()
 }
 
-func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader, dbFile io.Reader, destWriter io.Writer) error {
+func initDb(ctx *RequestContext, dbNam string) error {
   db := ctx.db
 
   // do not create on-disk temporary files (we don't want to clean them up)
@@ -720,38 +751,44 @@ func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader, dbFile io.
     return errors.New(s("CREATE TABLE failed\n %s\n", err.Error()))
   }
 
+  ctx.sql1, err = db.Prepare("INSERT INTO search_meta_0 (start_time, ch_id, image_uri, title_id, description_id, year, tags) VALUES (?, ?, ?, ?, ?, ?, ?);")
+  if err != nil {
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
+  }
+  ctx.sql2, err = db.Prepare("INSERT INTO fts_search (docid, text) VALUES (?, ?);")
+  if err != nil {
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
+  }
+  ctx.sql3, err = db.Prepare("INSERT INTO uri (_id, uri) VALUES (?, ?);")
+  if err != nil {
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
+  }
+  ctx.sql4, err = db.Prepare("INSERT INTO text (docid, text) VALUES (?, ?);")
+  if err != nil {
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
+  }
+  ctx.sql5, err = db.Prepare("INSERT OR IGNORE INTO channels (ch_id, image_uri, name, archive_time, ch_page) VALUES (?, ?, ?, ?, ?);")
+  if err != nil {
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
+  }
+  ctx.sql6, err = db.Prepare("INSERT INTO tags (_id, tag) VALUES (?, ?);")
+  if err != nil {
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
+  }
+  ctx.sql7, err = db.Prepare("INSERT INTO eltex_temp_search_tags (_id, tag_list) VALUES (?, ?);")
+  if err != nil {
+    return errors.New(s("Prepare() failed: %s\n", err.Error()))
+  }
+
+  return nil
+}
+
+func processXml(ctx *RequestContext, dbNam string, xmlFile io.Reader) error {
+  db := ctx.db
+
   bulkTx, txErr := db.Begin()
   if txErr != nil {
     return errors.New(s("Could not start transaction\n %s\n", txErr.Error()))
-  }
-
-  ctx.sql1, err = bulkTx.Prepare("INSERT INTO search_meta_0 (start_time, ch_id, image_uri, title_id, description_id, year, tags) VALUES (?, ?, ?, ?, ?, ?, ?);")
-  if err != nil {
-    return errors.New(s("Prepare() failed: %s\n", err.Error()))
-  }
-  ctx.sql2, err = bulkTx.Prepare("INSERT INTO fts_search (docid, text) VALUES (?, ?);")
-  if err != nil {
-    return errors.New(s("Prepare() failed: %s\n", err.Error()))
-  }
-  ctx.sql3, err = bulkTx.Prepare("INSERT INTO uri (_id, uri) VALUES (?, ?);")
-  if err != nil {
-    return errors.New(s("Prepare() failed: %s\n", err.Error()))
-  }
-  ctx.sql4, err = bulkTx.Prepare("INSERT INTO text (docid, text) VALUES (?, ?);")
-  if err != nil {
-    return errors.New(s("Prepare() failed: %s\n", err.Error()))
-  }
-  ctx.sql5, err = bulkTx.Prepare("INSERT INTO channels (ch_id, image_uri, name, archive_time, ch_page) VALUES (?, ?, ?, ?, ?);")
-  if err != nil {
-    return errors.New(s("Prepare() failed: %s\n", err.Error()))
-  }
-  ctx.sql6, err = bulkTx.Prepare("INSERT INTO tags (_id, tag) VALUES (?, ?);")
-  if err != nil {
-    return errors.New(s("Prepare() failed: %s\n", err.Error()))
-  }
-  ctx.sql7, err = bulkTx.Prepare("INSERT INTO eltex_temp_search_tags (_id, tag_list) VALUES (?, ?);")
-  if err != nil {
-    return errors.New(s("Prepare() failed: %s\n", err.Error()))
   }
 
   decoder := xml.NewDecoder(xmlFile)
@@ -779,11 +816,6 @@ root:
 
   fmt.Printf("Copying XMLTV schedule to database\n")
 
-  tagMap := ctx.tagMap
-
-  var appendedElements = 0
-  var appendedChannels = 0
-
   var programme *Programm
   var channel *Channel
 
@@ -809,24 +841,24 @@ root:
           // (old values will be kept for unset JSON fields)
           channel = &Channel{}
 
-          added, err := addChannel(ctx, decoder, channel, &startElement)
+          added, err := addChannel(ctx, decoder, channel, &startElement, bulkTx)
           if err != nil {
             return err
           }
 
           if added {
-            appendedChannels += 1;
+            ctx.appendedChannels += 1;
           }
         } else if (startElement.Name.Local == "programme") {
           programme = &Programm{}
 
-          added, err := addElement(ctx, decoder, programme, &startElement)
+          added, err := addElement(ctx, decoder, programme, &startElement, bulkTx)
           if err != nil {
             return err
           }
 
           if added {
-            appendedElements += 1;
+            ctx.appendedElements += 1;
           }
         } else {
           decoder.Skip()
@@ -836,7 +868,16 @@ root:
     }
   }
 
-  if (appendedElements == 0) {
+  bulkTxError := bulkTx.Commit()
+  if bulkTxError != nil {
+    return errors.New(s("Failed to commit primary transaction\n %s\n", bulkTxError.Error()))
+  }
+
+  return nil
+}
+
+func finishDb(ctx *RequestContext, dbNam string) error {
+  if (ctx.appendedElements == 0) {
     emptyErrStr := fmt.Sprintf("no elements within specified period (%s)", startFrom.Format(eltDateFormat))
 
     if (dbLastDate != nil) {
@@ -848,6 +889,17 @@ root:
     }
 
     return errors.New(s("%s\n", emptyErrStr))
+  }
+
+  var err error
+
+  db := ctx.db
+
+  tagMap := ctx.tagMap
+
+  bulkTx, txErr := db.Begin()
+  if txErr != nil {
+    return errors.New(s("Could not start transaction\n %s\n", txErr.Error()))
   }
 
   if *fakeEnd != "" {
@@ -899,7 +951,7 @@ root:
 
     //fmt.Printf("Adding new tag '%s' (value is %d, number of uses is %d)\n", tag, idVal, tagMap[tag].NumberOfUses)
 
-    _, tInsertErr := ctx.sql6.Exec(idVal, tag)
+    _, tInsertErr := bulkTx.Stmt(ctx.sql6).Exec(idVal, tag)
     if tInsertErr != nil {
       return errors.New(s("Failed to insert into tags table: %s\n", tInsertErr.Error()))
     }
@@ -909,10 +961,10 @@ root:
 
   bulkTxError := bulkTx.Commit()
   if bulkTxError != nil {
-    return errors.New(s("Failed to commit primary transaction\n %s\n", bulkTxError.Error()))
+    return errors.New(s("Failed to commit final pass transaction\n %s\n", bulkTxError.Error()))
   }
 
-  fmt.Printf("Inserted %d channels (%d archived), %d programm entries, %d unique strings\n", appendedChannels, archivedChannels, appendedElements, ctx.textIdMax)
+  fmt.Printf("Inserted %d channels (%d archived), %d programm entries, %d unique strings\n", ctx.appendedChannels, archivedChannels, ctx.appendedElements, ctx.textIdMax)
 
   if (len(tagMap) > 63) {
     fmt.Printf("Original XMLTV file has %d tags, the most popular 63 will be added to EPGX\n", len(tagMap))
@@ -932,7 +984,7 @@ root:
 
   rows, queryErr := db.Query("SELECT _id, tag_list FROM eltex_temp_search_tags")
   if queryErr != nil {
-    Bail("Failed to request EPG rows from database\n %s\n", queryErr.Error())
+    return errors.New(s("Failed to request EPG rows from database\n %s\n", queryErr.Error()))
   }
 
   dbIds := make([]int64, 0)
@@ -944,7 +996,7 @@ root:
 
     scanErr := rows.Scan(&rowId, &rowCats)
     if scanErr != nil {
-      Bail("SQLite error\n %s\n", scanErr.Error())
+      return errors.New(s("SQLite error\n %s\n", scanErr.Error()))
     }
 
     dbIds = append(dbIds, rowId)
@@ -970,6 +1022,8 @@ root:
     dbCats = append(dbCats, catVal)
   }
 
+  rows.Close()
+
   caTx, caTxErr := db.Begin()
   if caTxErr != nil {
     return errors.New(s("Could not start transaction\n %s\n", caTxErr.Error()))
@@ -988,7 +1042,7 @@ root:
 
   _, err = caTx.Exec("DROP TABLE eltex_temp_search_tags")
   if err != nil {
-    Bail("Failed to delete aux table: %s\n", err.Error())
+    return errors.New(s("Failed to delete aux table: %s\n", err.Error()))
   }
 
   _, err = caTx.Exec("DROP INDEX unique_start_time")
@@ -1151,7 +1205,7 @@ func preprocess(name string) (string) {
   return strings.TrimSpace(builder.String())
 }
 
-func addChannel(ctx *RequestContext, decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartElement) (bool, error) {
+func addChannel(ctx *RequestContext, decoder *xml.Decoder, channel *Channel, xmlElement *xml.StartElement, bulkTx *sql.Tx) (bool, error) {
   decErr := decoder.DecodeElement(channel, xmlElement)
   if (decErr != nil) {
     return false, errors.New(s("Could not decode element\n %s\n", decErr.Error()))
@@ -1217,15 +1271,17 @@ func addChannel(ctx *RequestContext, decoder *xml.Decoder, channel *Channel, xml
 
   //fmt.Printf("Inserting %s, %s %s %d\n", chId, imageUri.String, channel.Name, archived)
 
-  _, chInsertErr := ctx.sql5.Exec(chId, imageUri, preprocess(channel.Name), archived, channelPage)
+  chInsertRes, chInsertErr := bulkTx.Stmt(ctx.sql5).Exec(chId, imageUri, preprocess(channel.Name), archived, channelPage)
   if chInsertErr != nil {
     return false, errors.New(s("Failed to insert into channels table\n", chInsertErr.Error()))
   }
 
-  return true, nil;
+  rowsAffected, _ := chInsertRes.RowsAffected()
+
+  return rowsAffected != 0, nil;
 }
 
-func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, xmlElement *xml.StartElement) (bool, error) {
+func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, xmlElement *xml.StartElement, bulkTx *sql.Tx) (bool, error) {
   decErr := decoder.DecodeElement(programme, xmlElement)
   if (decErr != nil) {
     return false, errors.New(s("Could not decode element\n %s\n", decErr.Error()))
@@ -1311,6 +1367,12 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
     }
   }
 
+  textInsert := bulkTx.Stmt(ctx.sql4)
+  ftsInsert := bulkTx.Stmt(ctx.sql2)
+  uriInsert := bulkTx.Stmt(ctx.sql3)
+  metaInsert := bulkTx.Stmt(ctx.sql1)
+  tagInsert := bulkTx.Stmt(ctx.sql7)
+
   titleId := ctx.stringMap[progTitle]
   if titleId == 0 {
     titleId = ctx.textIdMax
@@ -1318,7 +1380,7 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
 
     ctx.stringMap[progTitle] = titleId
 
-    _, ftsTitleTextErr := ctx.sql4.Exec(titleId, progTitle)
+    _, ftsTitleTextErr := textInsert.Exec(titleId, progTitle)
     if (ftsTitleTextErr != nil) {
       return false, errors.New(s("text INSERT failed\n %s\n", ftsTitleTextErr.Error()))
     }
@@ -1328,7 +1390,7 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
       progTitle = strings.ReplaceAll(progTitle, "ё", "е")
     }
 
-    _, ftsTitleErr := ctx.sql2.Exec(titleId, progTitle)
+    _, ftsTitleErr := ftsInsert.Exec(titleId, progTitle)
     if (ftsTitleErr != nil) {
       return false, errors.New(s("FTS INSERT failed\n %s\n", ftsTitleErr.Error()))
     }
@@ -1347,7 +1409,7 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
 
     ctx.stringMap[progDescription] = descrId
 
-    _, ftsDescrTextErr := ctx.sql4.Exec(descrId, progDescription)
+    _, ftsDescrTextErr := textInsert.Exec(descrId, progDescription)
     if (ftsDescrTextErr != nil) {
       return false, errors.New(s("text INSERT failed\n %s\n", ftsDescrTextErr.Error()))
     }
@@ -1356,7 +1418,7 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
       progDescription = strings.ToLower(progDescription)
       progDescription = strings.ReplaceAll(progDescription, "ё", "е")
     }
-    _, ftsErr := ctx.sql2.Exec(descrId, progDescription)
+    _, ftsErr := ftsInsert.Exec(descrId, progDescription)
     if (ftsErr != nil) {
       return false, errors.New(s("FTS INSERT failed\n %s\n", ftsErr.Error()))
     }
@@ -1396,7 +1458,7 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
 
       ctx.uriMap[firstUri] = uriId
 
-      _, uriErr := ctx.sql3.Exec(uriId, firstUri)
+      _, uriErr := uriInsert.Exec(uriId, firstUri)
       if (uriErr != nil) {
         return false, errors.New(s("URI INSERT failed\n %s\n", uriErr.Error()))
       }
@@ -1460,7 +1522,7 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
     }
   }
 
-  metaRes, metaErr := ctx.sql1.Exec(startTime.Unix(), chId, imageDbId, titleId, descrId, progYear, 0)
+  metaRes, metaErr := metaInsert.Exec(startTime.Unix(), chId, imageDbId, titleId, descrId, progYear, 0)
   if (metaErr != nil) {
     fmt.Printf("When parsing %s\n", programme.Title)
 
@@ -1469,7 +1531,7 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
 
   insertId, _ := metaRes.LastInsertId()
 
-  _, tagsErr := ctx.sql7.Exec(insertId, catsColumn)
+  _, tagsErr := tagInsert.Exec(insertId, catsColumn)
   if tagsErr != nil {
     return false, errors.New(s("Tag INSERT failed\n %s\n", tagsErr.Error()))
   }
@@ -1560,8 +1622,6 @@ func HomeRouterHandler(w http.ResponseWriter, r *http.Request) {
 
   defer db.Close()
 
-  xmlStreamReader := http.MaxBytesReader(w, formPart, 536870912)
-
   var ctx = RequestContext{}
 
   ctx.db = db
@@ -1574,19 +1634,35 @@ func HomeRouterHandler(w http.ResponseWriter, r *http.Request) {
   ctx.textIdMax = 1
   ctx.uriIdMax = 1
 
+  initErr := initDb(&ctx, "main")
+  if initErr != nil {
+    fmt.Fprintf(os.Stderr, "Database creation failed: %s\n", err.Error())
+    http.Error(w, "failed", http.StatusInternalServerError)
+    return
+  }
+
+  xmlStreamReader := http.MaxBytesReader(w, formPart, 536870912)
+
   largeBuffer := bufio.NewReaderSize(xmlStreamReader, 1024 * 128)
 
-  err = processXml(&ctx, "main", largeBuffer, tmpFile, w)
+  err = processXml(&ctx, "main", largeBuffer)
 
   xmlStreamReader.Close()
-
-  optimizeDatabase(&ctx, "main")
 
   if err != nil {
     fmt.Fprintf(os.Stderr, "Conversion failed: %s\n", err.Error())
     http.Error(w, "failed", http.StatusInternalServerError)
     return
   }
+
+  err = finishDb(&ctx, "main")
+  if err != nil {
+    fmt.Fprintf(os.Stderr, "Postprocessing failed: %s\n", err.Error())
+    http.Error(w, "failed", http.StatusInternalServerError)
+    return
+  }
+
+  optimizeDatabase(&ctx, "main")
 
   respHeader := w.Header()
   respHeader.Add("Content-Disposition", "attachment; filename=\"schedule.epgx\"")
