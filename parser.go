@@ -83,6 +83,8 @@ type RequestContext struct {
   uriMap map[string]int64
   tagMap map[string]*TagMeta
   endMap map[string]*EndMeta
+  bgnMap map[string]*EndMeta
+  limits map[string][2]int64
   uriIdMax, textIdMax int64
   appendedElements, appendedChannels int
 }
@@ -456,6 +458,8 @@ func main() {
   ctx.uriMap = make(map[string]int64)
   ctx.tagMap = make(map[string]*TagMeta)
   ctx.endMap = make(map[string]*EndMeta)
+  ctx.bgnMap = make(map[string]*EndMeta)
+  ctx.limits = make(map[string][2]int64)
 
   ctx.textIdMax = 1
   ctx.uriIdMax = 1
@@ -866,6 +870,19 @@ root:
         }
         break;
     }
+  }
+
+  // determine new EPG bounds after processing this XMLTV file
+
+  var chEndTime, chStartTime int64
+
+  for chI, chEnd := range ctx.endMap {
+    chEndTime = chEnd.StartTime
+    chStartTime = ctx.bgnMap[chI].StartTime
+
+    newLimits := [2]int64{ chStartTime, chEndTime }
+
+    ctx.limits[chI] = newLimits
   }
 
   bulkTxError := bulkTx.Commit()
@@ -1326,10 +1343,30 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
     return false, nil
   }
 
+  epgBounds := ctx.limits[chId]
+  if epgBounds[0] != 0 {
+    epgStart := epgBounds[0]
+    epgEnd := epgBounds[1]
+
+    if startTime.Unix() >= epgStart && startTime.Unix() <= epgEnd {
+      // this entry is within period, already seen in previous XMLTV file
+      return false, nil
+    }
+  }
+
   lastEnd := ctx.endMap[chId]
 
   if lastEnd == nil || lastEnd.StartTime < startTime.Unix() {
     ctx.endMap[chId] = &EndMeta{
+      StartTime: startTime.Unix(),
+      EndTime: programme.End,
+    }
+  }
+
+  firstStart := ctx.bgnMap[chId]
+
+  if firstStart == nil || firstStart.StartTime > startTime.Unix() {
+    ctx.bgnMap[chId] = &EndMeta{
       StartTime: startTime.Unix(),
       EndTime: programme.End,
     }
@@ -1630,6 +1667,8 @@ func HomeRouterHandler(w http.ResponseWriter, r *http.Request) {
   ctx.uriMap = make(map[string]int64)
   ctx.tagMap = make(map[string]*TagMeta)
   ctx.endMap = make(map[string]*EndMeta)
+  ctx.bgnMap = make(map[string]*EndMeta)
+  ctx.limits = make(map[string][2]int64)
 
   ctx.textIdMax = 1
   ctx.uriIdMax = 1
