@@ -581,7 +581,12 @@ root:
           // (old values will be kept for unset JSON fields)
           track = &Track{}
 
-          added, err := addTrack(ctx, decoder, track, &startElement, qSql, updateSql, updateSql2)
+          decErr := decoder.DecodeElement(track, &startElement)
+          if (decErr != nil) {
+            Bail("Failed to process <track>\n %s\n", decErr.Error())
+          }
+
+          added, err := addTrack(ctx, track, qSql, updateSql, updateSql2, bulkTx)
           if err != nil {
             Bail("Failed to process <track>\n %s\n", err.Error())
           }
@@ -615,19 +620,9 @@ root:
   fmt.Printf("%d out of %d XSPF tracks had useful metadata \n", lineNum, tracksTotal)
 }
 
-func addTrack(ctx *RequestContext, decoder *xml.Decoder, track *Track, xmlElement *xml.StartElement, q *sql.Stmt, updSql *sql.Stmt, updSql2 *sql.Stmt) (bool, error) {
-  decErr := decoder.DecodeElement(track, xmlElement)
-  if (decErr != nil) {
-    return false, errors.New(s("Could not decode element\n %s\n", decErr.Error()))
-  }
-
+func addTrack(ctx *RequestContext, track *Track, q *sql.Stmt, updSql *sql.Stmt, updSql2 *sql.Stmt, bulkTx *sql.Tx) (bool, error) {
   if track.PsFile == "" {
     //fmt.Fprintf(os.Stderr, "No <psfile>\n")
-    return false, nil
-  }
-
-  if track.ArchiveLimit == 0 && track.ChannelPage == "" && track.Image == "" {
-    //fmt.Fprintf(os.Stderr, "Track has no useful info: %s\n", preprocess(track.Title))
     return false, nil
   }
 
@@ -655,7 +650,14 @@ func addTrack(ctx *RequestContext, decoder *xml.Decoder, track *Track, xmlElemen
 
   scanErr := chIdQuery.Scan(&foundChId)
   if scanErr == sql.ErrNoRows {
-    return false, nil
+    // insert completely new entry for channel (so we can search EPG for it's name)
+
+    _, insertErr := bulkTx.Stmt(ctx.sql5).Exec(track.PsFile, chImgUri, processedTitle, track.ArchiveLimit, chPageUri)
+    if insertErr != nil {
+      return false, insertErr
+    }
+
+    return true, nil
   } else if scanErr != nil {
     return false, scanErr
   }
