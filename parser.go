@@ -438,18 +438,6 @@ func main() {
     }
   }
 
-  gzTmpFile, gzTmpErr := ioutil.TempFile(outDir, "db-*.gz")
-  if gzTmpErr != nil {
-    Bail("Failed to create compressed output file\n %s\n", gzTmpErr.Error())
-  }
-
-  defer os.Remove(gzTmpFile.Name())
-
-  gzipBufWriter := bufio.NewWriter(gzTmpFile)
-  gzipWriter, _ := gzip.NewWriterLevel(gzipBufWriter, gzip.BestCompression)
-  gzipWriter.Name = "epg.sqlite"
-  gzipWriter.Comment = "eltex epg v2"
-
   ctx := RequestContext{}
 
   ctx.db = db
@@ -488,6 +476,18 @@ func main() {
   optimizeDatabase(&ctx, "main")
 
   fmt.Printf("Compressing database file\n")
+
+  gzTmpFile, gzTmpErr := ioutil.TempFile(outDir, "db-*.gz")
+  if gzTmpErr != nil {
+    Bail("Failed to create compressed output file\n %s\n", gzTmpErr.Error())
+  }
+
+  defer os.Remove(gzTmpFile.Name())
+
+  gzipBufWriter := bufio.NewWriter(gzTmpFile)
+  gzipWriter, _ := gzip.NewWriterLevel(gzipBufWriter, gzip.BestCompression)
+  gzipWriter.Name = "epg.sqlite"
+  gzipWriter.Comment = "eltex epg v2"
 
   if _, copyErr := io.Copy(gzipWriter, tmpFile); copyErr != nil {
     Bail("%s\n", copyErr.Error())
