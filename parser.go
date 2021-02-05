@@ -120,6 +120,7 @@ var yearRegexp1 *regexp.Regexp
 
 var excludeYear bool
 var excludeTags bool
+var ignoreXspfErrors bool
 
 var mappedTotal = 0
 var trimmedTotal = 0
@@ -173,6 +174,7 @@ func main() {
   showVersion := flag.Bool("version", false, "Write version information to standard output")
   omitYear := flag.Bool("exclude-year", false, "Exclude optional year data from generated EPG")
   omitTags := flag.Bool("exclude-tags", false, "Exclude optional tags data from generated EPG")
+  ignoreXspfConflicts := flag.Bool("xspf-ignore-conflicts", false, "Import only new channels from XSPF, ignore conflicts")
   setArchiveLength := flag.Int("dvr-length", 0, "Set default length of DVR archive, in hours")
   flag.Parse()
 
@@ -183,6 +185,8 @@ func main() {
     flag.PrintDefaults()
     os.Exit(2)
   }
+
+  ignoreXspfErrors = *ignoreXspfConflicts
 
   seen := make(map[string]bool)
 
@@ -664,11 +668,17 @@ func addTrack(ctx *RequestContext, track *Track, q *sql.Stmt, updSql *sql.Stmt, 
 
   _, updateErr := updSql.Exec(track.ArchiveLimit, chPageUri, chImgUri, track.PsFile, foundChId)
   if updateErr != nil {
-    return false, updateErr
+    fmt.Fprintf(os.Stderr, "Failed to update channels table for '%s' (ch_id = '%s'): new ch_id is '%s'\n", track.Title, foundChId, track.PsFile)
+
+    if !ignoreXspfErrors {
+      return false, updateErr
+    }
   }
 
   _, updateErr2 := updSql2.Exec(track.PsFile, foundChId)
   if updateErr2 != nil {
+    fmt.Fprintf(os.Stderr, "Failed to update search_meta table for '%s' (ch_id = '%s'): new ch_id is '%s'\n", track.Title, foundChId, track.PsFile)
+
     return false, updateErr2
   }
 
