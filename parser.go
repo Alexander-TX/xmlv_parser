@@ -728,9 +728,9 @@ func initDb(ctx *RequestContext, dbNam string) error {
   if useLegacyFormat {
     //fmt.Fprintf(os.Stderr, "Using legacy format: tokenize=porter\n")
 
-    _, err = db.Exec(s("CREATE VIRTUAL TABLE %s.fts_search USING fts4(content='', matchinfo='fts3', prefix='3', text, tokenize=porter);", dbNam))
+    _, err = db.Exec(s("CREATE VIRTUAL TABLE %s.fts_search USING fts4(content='', matchinfo='fts3', prefix='3', text, tokenize=simple);", dbNam))
   } else {
-    _, err = db.Exec(s("CREATE VIRTUAL TABLE %s.fts_search USING fts4(content='text', matchinfo='fts3', prefix='3', text, tokenize=unicode61);", dbNam))
+    _, err = db.Exec(s("CREATE VIRTUAL TABLE %s.fts_search USING fts4(content='', matchinfo='fts3', prefix='3', text, tokenize=unicode61);", dbNam))
   }
 
   if err != nil {
