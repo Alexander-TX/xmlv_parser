@@ -33,7 +33,7 @@ var jtv *zip.Writer
 var pdtWriter io.Writer
 var ndxBuffer bytes.Buffer
 var prevChannelId string
-var pdtPosition uint16
+var pdtPosition uint32
 
 var charsetName string
 var filenameCharset string
@@ -71,8 +71,8 @@ func flushNdx() {
 
   // set total entry count
   ndxBytes := ndxBuffer.Bytes()
-  ndxEntryCount := (ndxBuffer.Len() - 2) / 12;
-  binary.LittleEndian.PutUint16(ndxBytes[0:], uint16(ndxEntryCount))
+  ndxEntryCount := (ndxBuffer.Len() - 4) / 12;
+  binary.LittleEndian.PutUint32(ndxBytes[0:], uint32(ndxEntryCount))
 
   _, ndxErr := ndxBuffer.WriteTo(ndxWriter)
   if ndxErr != nil {
@@ -240,8 +240,8 @@ func addItem(chId string, startTimeUnix int64, progTitle string) {
       flushNdx()
     }
 
-    // reserve space for 2-byte number of entries
-    spacer := make([]byte, 2)
+    // reserve space for 4-byte number of entries
+    spacer := make([]byte, 4)
     ndxBuffer.Write(spacer)
 
     prevChannelId = chId
@@ -261,7 +261,7 @@ func addItem(chId string, startTimeUnix int64, progTitle string) {
     sig := []byte("JTV 3.x TV Program Data\x0a\x0a\x0a")
     pdtWriter.Write(sig)
 
-    pdtPosition = uint16(len(sig))
+    pdtPosition = uint32(len(sig))
   }
 
   startTimeUnix += int64(hoursOffset * 60 * 60)
@@ -276,9 +276,8 @@ func addItem(chId string, startTimeUnix int64, progTitle string) {
   }
 
   ndxBuf := make([]byte, 12)
-  binary.LittleEndian.PutUint64(ndxBuf[0:], 0)
-  binary.LittleEndian.PutUint64(ndxBuf[2:], filetime)
-  binary.LittleEndian.PutUint16(ndxBuf[10:], pdtPosition)
+  binary.LittleEndian.PutUint64(ndxBuf[0:], filetime)
+  binary.LittleEndian.PutUint32(ndxBuf[8:], pdtPosition)
   ndxBuffer.Write(ndxBuf)
 
   var pdtLen int
@@ -293,7 +292,7 @@ func addItem(chId string, startTimeUnix int64, progTitle string) {
   binary.LittleEndian.PutUint16(pdtBuf[0:], uint16(len(progTitle)))
   copy(pdtBuf[2:], progTitle)
 
-  pdtPosition += uint16(pdtLen)
+  pdtPosition += uint32(pdtLen)
 
   _, pdtErr := pdtWriter.Write(pdtBuf)
   if pdtErr != nil {
