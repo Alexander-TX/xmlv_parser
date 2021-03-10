@@ -56,6 +56,7 @@ type ChannelMeta struct {
   ArchiveHours         int
   ImageUrlOverride     string
   ChannelPage          string
+  TimeOffsetHours      int
 }
 
 type TagMeta struct {
@@ -340,7 +341,7 @@ func main() {
     for {
       mapRule, lineErr := mapReader.ReadString('\n')
 
-      if mapRule != "" {
+      if mapRule != "" && !strings.HasPrefix(mapRule, "#") {
         mapRule = strings.TrimSpace(mapRule)
 
         lineNum += 1
@@ -360,6 +361,7 @@ func main() {
         hours := 0
         chImage := ""
         chPage := ""
+        chOffset := 0
 
         if len(sepIdx) > 2 {
           hours, _ = strconv.Atoi(sepIdx[2])
@@ -373,11 +375,16 @@ func main() {
           chPage = sepIdx[4]
         }
 
+        if len(sepIdx) > 5 {
+          chOffset, _ = strconv.Atoi(sepIdx[5])
+        }
+
         idMap[mapId] = ChannelMeta{
           Id: mapNam,
           ArchiveHours: hours,
           ImageUrlOverride: chImage,
           ChannelPage: chPage,
+          TimeOffsetHours: chOffset,
         }
       }
 
@@ -1316,10 +1323,13 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
     return false, errors.New(s("Could not decode element\n %s\n", decErr.Error()))
   }
 
+  var chOffset int64 = 0
+
   chId := programme.Channel
 
   if mappedId, ok := idMap[chId]; ok {
     chId = mappedId.Id
+    chOffset = int64(mappedId.TimeOffsetHours)
 
     mappedTotal += 1
   }
@@ -1339,7 +1349,7 @@ func addElement(ctx *RequestContext, decoder *xml.Decoder, programme *Programm, 
     return false, errors.New(s("Failed to parse start time\n %s\n", timeErr.Error()))
   }
 
-  startTime = time.Unix(startTime.Unix(), 0).In(localLocation)
+  startTime = time.Unix((int64) (startTime.Unix() + chOffset * 3600), 0).In(localLocation)
 
   if (startTime.Before(startFrom)) {
     if (dbLastDate == nil || startTime.After(*dbLastDate)) {
